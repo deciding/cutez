@@ -7,6 +7,7 @@ import pytest
 import torch
 
 sys.path.insert(0, ".")
+from trace.core import _intern_region, get_region_names
 from trace.format import (
     ChromeTraceEvent,
     PackedEvent,
@@ -164,6 +165,19 @@ def test_trace_json_payload_scales_times_by_one_thousandth():
     assert payload["traceEvents"][0]["dur"] == 0.5
     assert payload["traceEvents"][1]["ts"] == 1.5
     assert payload["traceEvents"][1]["dur"] == 1.0
+
+
+def test_region_name_interning_is_stable_and_recoverable():
+    outer = _intern_region("outer")
+    add = _intern_region("add")
+    outer_again = _intern_region("outer")
+
+    names = get_region_names()
+
+    assert outer == outer_again
+    assert outer != add
+    assert names[outer] == "outer"
+    assert names[add] == "add"
 
 
 def test_public_package_exports_include_session_and_runner():

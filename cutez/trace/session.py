@@ -25,6 +25,7 @@ from .format import (
     pair_complete_events,
     trace_json_payload,
 )
+from .core import get_region_names
 
 
 @dataclass
@@ -130,8 +131,11 @@ class CutezTraceSession:
         """
         decoded = self.decode_buffer(self.buffer_tensor)
         paired = []
+        region_names = (
+            self.region_names if self.region_names is not None else get_region_names()
+        )
         for events in decoded.values():
-            paired.extend(pair_complete_events(events, region_names=self.region_names))
+            paired.extend(pair_complete_events(events, region_names=region_names))
         sm_clock_khz = self.resolve_sm_clock_khz()
         payload = trace_json_payload(
             self._events_to_chrome_time(paired, sm_clock_khz=sm_clock_khz)

@@ -15,6 +15,7 @@ __all__ = [
     "TraceConfig",
     "CutezTracer",
     "CutezTraceSession",
+    "get_region_names",
     "PackedEvent",
     "SharedStorage",
     "clock_record",
@@ -39,6 +40,7 @@ def __getattr__(name: str):
         "CutezTracer",
         "SharedStorage",
         "clock_record",
+        "get_region_names",
         "finanlize_clock",
         "init_clock",
     }:

@@ -19,6 +19,26 @@ if not hasattr(cutlass, "int32"):
     cutlass.int32 = cutlass.Int32
 
 
+_REGION_TO_ID: dict[str, int] = {}
+_ID_TO_REGION: dict[int, str] = {}
+
+
+def _intern_region(name: str) -> int:
+    region_id = _REGION_TO_ID.get(name)
+    if region_id is not None:
+        return region_id
+    region_id = len(_REGION_TO_ID) + 1
+    if region_id > 0xFF:
+        raise ValueError("cutez.trace supports at most 255 distinct scope names")
+    _REGION_TO_ID[name] = region_id
+    _ID_TO_REGION[region_id] = name
+    return region_id
+
+
+def get_region_names() -> dict[int, str]:
+    return dict(_ID_TO_REGION)
+
+
 @cute.jit
 def init_clock(
     clock_ptr,
@@ -113,6 +133,8 @@ class CutezTracer:
         )
 
     def _record(self, is_start: bool, scope_id):
+        if isinstance(scope_id, str):
+            scope_id = _intern_region(scope_id)
         is_leader = self.is_leader.ir_value()
         clock_record(
             is_start,

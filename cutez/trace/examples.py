@@ -17,7 +17,6 @@ WARPS_PER_BLOCK = THREADS // 32
 BLOCKS_PER_SM = 1
 TOTAL_BLOCKS = 16
 SM_SMEM_AVAILABLE_BYTES = 512
-REGION_NAMES = {1: "outer", 2: "add"}
 
 
 @cute.kernel
@@ -28,13 +27,11 @@ def sample_trace_kernel(out: cute.Tensor, iters: Int32, trace_cfg: TraceConfig):
     wid = cute.arch.make_warp_uniform(cute.arch.warp_idx())
     tracer = CutezTracer.create(out_ptr, seg_idx=wid, cfg=trace_cfg)
 
-    outer_scope = Int32(1)
-    add_scope = Int32(2)
     acc = Int32(wid)
 
-    tracer.enter_scope(outer_scope)
+    tracer.enter_scope("outer")
     for i in cutlass.range(iters):
-        tracer.enter_scope(add_scope)
+        tracer.enter_scope("add")
 
         # Do some real integer work so the traced region is not empty.
         step = Int32(i + wid + 1)
@@ -45,8 +42,8 @@ def sample_trace_kernel(out: cute.Tensor, iters: Int32, trace_cfg: TraceConfig):
             # acc = acc * Int32(5)
             acc = acc + delta
 
-        tracer.exit_scope(add_scope)
-    tracer.exit_scope(outer_scope)
+        tracer.exit_scope("add")
+    tracer.exit_scope("outer")
 
     # Keep the arithmetic live without changing the trace structure.
     if tidx == 0:
@@ -72,7 +69,6 @@ def run_sample_trace(trace_path: str | Path, *, iters: int = 4):
         total_blocks=TOTAL_BLOCKS,
         warps_per_block=WARPS_PER_BLOCK,
         trace_path=trace_path,
-        region_names=REGION_NAMES,
     )
     trace_cfg = TraceConfig(
         block_smem_bytes=session.block_smem_bytes,
