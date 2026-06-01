@@ -9,7 +9,7 @@ import cutlass.cute as cute
 import torch
 from cutlass import Int32
 
-from .core import CutezTracer, SharedStorage
+from .core import CutezTracer, SharedStorage, TraceConfig
 from .session import CutezTraceSession
 
 THREADS = 128
@@ -19,7 +19,7 @@ REGION_NAMES = {1: "outer", 2: "add"}
 
 
 @cute.kernel
-def sample_trace_kernel(out: cute.Tensor, iters: Int32):
+def sample_trace_kernel(out: cute.Tensor, iters: Int32, trace_cfg: TraceConfig):
     smem = cutlass.utils.SmemAllocator()
     storage = smem.allocate(SharedStorage)
     clock_ptr = storage.clock_buf.data_ptr()
@@ -27,9 +27,7 @@ def sample_trace_kernel(out: cute.Tensor, iters: Int32):
     tidx, _, _ = cute.arch.thread_idx()
 
     wid = cute.arch.make_warp_uniform(cute.arch.warp_idx())
-    tracer = CutezTracer.create(
-        clock_ptr, out_ptr, seg_idx=wid, segment_size=SEGMENT_BYTES
-    )
+    tracer = CutezTracer.create(clock_ptr, out_ptr, seg_idx=wid, cfg=trace_cfg)
 
     outer_scope = Int32(1)
     add_scope = Int32(2)
@@ -44,8 +42,8 @@ def sample_trace_kernel(out: cute.Tensor, iters: Int32):
         for j in cutlass.range(64):
             delta = step + Int32(j)
             acc = acc + delta
-            #acc = acc * Int32(3)
-            #acc = acc * Int32(5)
+            # acc = acc * Int32(3)
+            # acc = acc * Int32(5)
             acc = acc + delta
 
         tracer.exit_scope(add_scope)
@@ -60,8 +58,10 @@ def sample_trace_kernel(out: cute.Tensor, iters: Int32):
 
 
 @cute.jit
-def launch_sample_trace(out: cute.Tensor, iters: Int32):
-    sample_trace_kernel(out, iters).launch(grid=(1, 1, 1), block=(THREADS, 1, 1))
+def launch_sample_trace(out: cute.Tensor, iters: Int32, trace_cfg: TraceConfig):
+    sample_trace_kernel(out, iters, trace_cfg).launch(
+        grid=(1, 1, 1), block=(THREADS, 1, 1)
+    )
 
 
 def run_sample_trace(trace_path: str | Path, *, iters: int = 4):
@@ -74,8 +74,11 @@ def run_sample_trace(trace_path: str | Path, *, iters: int = 4):
         trace_path=trace_path,
         region_names=REGION_NAMES,
     )
-    compiled = cute.compile(launch_sample_trace, session.buffer, Int32(iters))
-    compiled(session.buffer, Int32(iters))
+    trace_cfg = TraceConfig(segment_size=SEGMENT_BYTES)
+    compiled = cute.compile(
+        launch_sample_trace, session.buffer, Int32(iters), trace_cfg
+    )
+    compiled(session.buffer, Int32(iters), trace_cfg)
     torch.cuda.synchronize()
 
     session.write_trace_json()

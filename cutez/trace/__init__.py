@@ -12,6 +12,7 @@ from .session import CutezTraceSession
 
 __all__ = [
     "ChromeTraceEvent",
+    "TraceConfig",
     "CutezTracer",
     "CutezTraceSession",
     "PackedEvent",
@@ -34,6 +35,7 @@ def __getattr__(name: str):
 
         return run_sample_trace
     if name in {
+        "TraceConfig",
         "CutezTracer",
         "SharedStorage",
         "clock_record",

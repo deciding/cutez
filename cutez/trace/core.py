@@ -13,6 +13,7 @@ import cutlass.cute as cute
 from cutlass import const_expr
 from cutlass._mlir import ir
 from cutlass._mlir.dialects import llvm
+from quack.cute_dsl_utils import ParamsBase
 
 if not hasattr(cutlass, "int32"):
     cutlass.int32 = cutlass.Int32
@@ -52,8 +53,13 @@ def init_clock(
 
 
 @dataclass
+class TraceConfig(ParamsBase):
+    segment_size: int
+
+
+@dataclass
 class CutezTracer:
-    segment_size: int = 0
+    segment_size: object = None
     seg_addr: object = None
     out_addr: object = None
     is_leader: object = None
@@ -65,14 +71,15 @@ class CutezTracer:
         clock_ptr,
         out_ptr,
         seg_idx: cutlass.Int32,
-        segment_size: int,
+        cfg: TraceConfig,
     ):
         seg_addr, out_addr, is_leader = init_clock(
             clock_ptr,
             out_ptr,
             seg_idx=seg_idx,
-            segment_size=cutlass.Int32(segment_size),
+            segment_size=cutlass.Int32(cfg.segment_size),
         )
+        segment_size = cutlass.Int32(cfg.segment_size)
         return cls(
             segment_size=segment_size,
             seg_addr=seg_addr,
@@ -89,7 +96,7 @@ class CutezTracer:
             self.clock_idx,
             self.seg_addr,
             is_leader,
-            cutlass.Int32(self.segment_size),
+            self.segment_size,
         )
         self.clock_idx += 1
 
@@ -103,7 +110,7 @@ class CutezTracer:
         finanlize_clock(
             self.seg_addr,
             self.out_addr,
-            cutlass.Int32(self.segment_size),
+            self.segment_size,
         )
 
 
