@@ -9,7 +9,7 @@ import cutlass.cute as cute
 import torch
 from cutlass import Int32
 
-from .core import SharedStorage, clock_record, finanlize_clock, init_clock
+from .core import CutezTracer, SharedStorage
 from .session import CutezTraceSession
 
 THREADS = 128
@@ -27,40 +27,36 @@ def sample_trace_kernel(out: cute.Tensor, iters: Int32):
     tidx, _, _ = cute.arch.thread_idx()
 
     wid = cute.arch.make_warp_uniform(cute.arch.warp_idx())
-    seg_addr, out_addr, is_leader = init_clock(
+    tracer = CutezTracer.create(
         clock_ptr, out_ptr, seg_idx=wid, segment_size=SEGMENT_BYTES
     )
 
     outer_scope = Int32(1)
     add_scope = Int32(2)
-    clock_idx = Int32(0)
     acc = Int32(wid)
 
-    clock_record(True, outer_scope, clock_idx, seg_addr, is_leader, SEGMENT_BYTES)
-    clock_idx += 1
+    tracer.enter_scope(outer_scope)
     for i in cutlass.range(iters):
-        clock_record(True, add_scope, clock_idx, seg_addr, is_leader, SEGMENT_BYTES)
-        clock_idx += 1
+        tracer.enter_scope(add_scope)
 
         # Do some real integer work so the traced region is not empty.
         step = Int32(i + wid + 1)
         for j in cutlass.range(64):
             delta = step + Int32(j)
             acc = acc + delta
-            acc = acc * Int32(3)
-            acc = acc * Int32(5)
+            #acc = acc * Int32(3)
+            #acc = acc * Int32(5)
             acc = acc + delta
 
-        clock_record(False, add_scope, clock_idx, seg_addr, is_leader, SEGMENT_BYTES)
-        clock_idx += 1
-    clock_record(False, outer_scope, clock_idx, seg_addr, is_leader, SEGMENT_BYTES)
+        tracer.exit_scope(add_scope)
+    tracer.exit_scope(outer_scope)
 
     # Keep the arithmetic live without changing the trace structure.
     if tidx == 0:
         cute.printf(acc)
 
     cute.arch.sync_threads()
-    finanlize_clock(seg_addr, out_addr, SEGMENT_BYTES)
+    tracer.flush()
 
 
 @cute.jit

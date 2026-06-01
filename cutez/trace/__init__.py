@@ -12,6 +12,7 @@ from .session import CutezTraceSession
 
 __all__ = [
     "ChromeTraceEvent",
+    "CutezTracer",
     "CutezTraceSession",
     "PackedEvent",
     "SharedStorage",
@@ -32,7 +33,13 @@ def __getattr__(name: str):
         from .examples import run_sample_trace
 
         return run_sample_trace
-    if name in {"SharedStorage", "clock_record", "finanlize_clock", "init_clock"}:
+    if name in {
+        "CutezTracer",
+        "SharedStorage",
+        "clock_record",
+        "finanlize_clock",
+        "init_clock",
+    }:
         from . import core
 
         return getattr(core, name)

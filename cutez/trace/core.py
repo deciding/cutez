@@ -6,6 +6,8 @@ intentionally small and explicit so downstream repos can copy the entire
 ``cutez_trace`` directory without any extra root-level files.
 """
 
+from dataclasses import dataclass
+
 import cutlass
 import cutlass.cute as cute
 from cutlass import const_expr
@@ -49,12 +51,68 @@ def init_clock(
     return seg_addr, out_addr, is_leader_thread
 
 
+@dataclass
+class CutezTracer:
+    segment_size: int = 0
+    seg_addr: object = None
+    out_addr: object = None
+    is_leader: object = None
+    clock_idx: cutlass.Int32 = None
+
+    @classmethod
+    def create(
+        cls,
+        clock_ptr,
+        out_ptr,
+        seg_idx: cutlass.Int32,
+        segment_size: int,
+    ):
+        seg_addr, out_addr, is_leader = init_clock(
+            clock_ptr,
+            out_ptr,
+            seg_idx=seg_idx,
+            segment_size=cutlass.Int32(segment_size),
+        )
+        return cls(
+            segment_size=segment_size,
+            seg_addr=seg_addr,
+            out_addr=out_addr,
+            is_leader=is_leader,
+            clock_idx=cutlass.Int32(0),
+        )
+
+    def _record(self, is_start: bool, scope_id):
+        is_leader = self.is_leader.ir_value()
+        clock_record(
+            is_start,
+            scope_id,
+            self.clock_idx,
+            self.seg_addr,
+            is_leader,
+            cutlass.Int32(self.segment_size),
+        )
+        self.clock_idx += 1
+
+    def enter_scope(self, scope_id):
+        self._record(True, scope_id)
+
+    def exit_scope(self, scope_id):
+        self._record(False, scope_id)
+
+    def flush(self):
+        finanlize_clock(
+            self.seg_addr,
+            self.out_addr,
+            cutlass.Int32(self.segment_size),
+        )
+
+
 @cute.jit
 def clock_record(
     is_start: cutlass.Constexpr,
     scope_id: cutlass.Constexpr,
     clock_idx: cutlass.Int32,
-    seg_addr,
+    seg_addr: cutlass.Int32,
     is_leader_thread,
     segment_size: cutlass.Int32,
 ):
