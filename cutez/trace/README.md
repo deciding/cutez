@@ -21,7 +21,6 @@ The low-level helpers live in `cutez_trace.core`:
 
 User code is responsible for:
 
-- choosing which warp records, usually with conditions such as `wid == 0`
 - using the same `wid` as the segment id
 - maintaining `clock_idx`
 - understanding that `clock_idx` wraps in the ring when it exceeds the segment capacity
@@ -30,17 +29,18 @@ User code is responsible for:
 nanoseconds with the device SM clock rate reported by CUDA. That conversion is
 approximate host-side scaling, not calibrated wall-clock timing.
 
-`run_sample_trace(...)` currently supports `active_warps=(0,)` and
-`active_warps=(0, 1)`.
+The shipped example records all four warps in one 128-thread block. Each warp
+emits one outer scope and repeated inner add scopes, so the ring buffer wraps
+once `iters` is large enough.
 
 ## Example
 
 ```python
 from pathlib import Path
 
-from cutez_trace.examples import run_sample_trace
+from cutez.trace.examples import run_sample_trace
 
-result = run_sample_trace(Path("trace.json"), iters=2, active_warps=(0, 1))
+result = run_sample_trace(Path("trace.json"), iters=4)
 print(result["trace_path"])
 ```
 
