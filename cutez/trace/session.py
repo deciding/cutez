@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch
+from cutlass.cute.runtime import from_dlpack
 
 from .format import (
     ChromeTraceEvent,
@@ -28,9 +29,11 @@ from .format import (
 
 @dataclass
 class CutezTraceSession:
-    blocks: int
+    blocks_per_sm: int
     warps_per_block: int
     segment_bytes: int
+    trace_path: str | Path
+    region_names: dict[int, str] | None = None
     device: str | torch.device = "cuda"
     sm_clock_khz: int | None = None
 
@@ -38,17 +41,19 @@ class CutezTraceSession:
         if self.segment_bytes % 8 != 0:
             raise ValueError("segment_bytes must be divisible by 8")
         self.segment_words = self.segment_bytes // 8
-        self.total_segments = self.blocks * self.warps_per_block
+        self.total_segments = self.blocks_per_sm * self.warps_per_block
         self.buffer_numel = self.total_segments * self.segment_words
+        self.trace_path = Path(self.trace_path)
 
-    def allocate_buffer(self) -> torch.Tensor:
+    def allocate_buffer(self) -> tuple[torch.Tensor, object]:
         """Allocate the flat GMEM output buffer expected by the example kernels.
 
         The returned `torch.int64` tensor has one contiguous segment per
         `(block, wid)` pair, where the warp id is also the segment id used by
         `my_trace.init_clock(...)` and `my_trace.finanlize_clock(...)`.
         """
-        return torch.zeros(self.buffer_numel, dtype=torch.int64, device=self.device)
+        out = torch.zeros(self.buffer_numel, dtype=torch.int64, device=self.device)
+        return out, from_dlpack(out, assumed_align=8)
 
     def resolve_sm_clock_khz(self) -> int:
         if self.sm_clock_khz is not None:
@@ -98,7 +103,7 @@ class CutezTraceSession:
 
         flat = words.detach().cpu().reshape(-1).tolist()
         out = {}
-        for block in range(self.blocks):
+        for block in range(self.blocks_per_sm):
             for warp in range(self.warps_per_block):
                 segment = block * self.warps_per_block + warp
                 start = segment * self.segment_words
@@ -110,12 +115,7 @@ class CutezTraceSession:
                 )
         return out
 
-    def write_trace_json(
-        self,
-        path: str | Path,
-        words: torch.Tensor,
-        region_names: dict[int, str] | None = None,
-    ) -> Path:
+    def write_trace_json(self, words: torch.Tensor) -> Path:
         """Decode a trace buffer and write a Chrome trace JSON file.
 
         The caller provides the raw flat buffer only. This method decodes each
@@ -126,14 +126,13 @@ class CutezTraceSession:
         decoded = self.decode_buffer(words)
         paired = []
         for events in decoded.values():
-            paired.extend(pair_complete_events(events, region_names=region_names))
+            paired.extend(pair_complete_events(events, region_names=self.region_names))
         sm_clock_khz = self.resolve_sm_clock_khz()
         payload = trace_json_payload(
             self._events_to_chrome_time(paired, sm_clock_khz=sm_clock_khz)
         )
         for event in payload["traceEvents"]:
             event["args"]["clock_rate_khz"] = sm_clock_khz
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload))
-        return path
+        self.trace_path.parent.mkdir(parents=True, exist_ok=True)
+        self.trace_path.write_text(json.dumps(payload))
+        return self.trace_path

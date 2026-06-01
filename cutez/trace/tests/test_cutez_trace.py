@@ -237,15 +237,40 @@ def test_installed_environment_can_import_cutez_trace_examples(tmp_path: Path):
 
 
 def test_session_allocates_one_segment_per_block_warp():
-    session = CutezTraceSession(blocks=2, warps_per_block=4, segment_bytes=32)
+    session = CutezTraceSession(
+        blocks_per_sm=2,
+        warps_per_block=4,
+        segment_bytes=32,
+        trace_path="trace.json",
+    )
 
     assert session.segment_words == 4
     assert session.total_segments == 8
     assert session.buffer_numel == 32
 
 
+def test_session_allocate_buffer_returns_torch_and_cute_views():
+    session = CutezTraceSession(
+        blocks_per_sm=1,
+        warps_per_block=1,
+        segment_bytes=32,
+        trace_path="trace.json",
+    )
+
+    out, out_cute = session.allocate_buffer()
+
+    assert out.dtype == torch.int64
+    assert out.numel() == session.buffer_numel
+    assert out_cute is not None
+
+
 def test_session_decodes_flat_buffer_by_block_and_warp():
-    session = CutezTraceSession(blocks=1, warps_per_block=2, segment_bytes=32)
+    session = CutezTraceSession(
+        blocks_per_sm=1,
+        warps_per_block=2,
+        segment_bytes=32,
+        trace_path="trace.json",
+    )
     words = torch.tensor(
         [
             pack_event(10, 0, 1, True),
@@ -269,9 +294,11 @@ def test_session_decodes_flat_buffer_by_block_and_warp():
 
 def test_session_write_trace_json_creates_file(tmp_path: Path):
     session = CutezTraceSession(
-        blocks=1,
+        blocks_per_sm=1,
         warps_per_block=1,
         segment_bytes=32,
+        trace_path=tmp_path / "trace.json",
+        region_names={9: "epilogue"},
         sm_clock_khz=500_000,
     )
     words = torch.tensor(
@@ -283,14 +310,7 @@ def test_session_write_trace_json_creates_file(tmp_path: Path):
         ],
         dtype=torch.int64,
     )
-    path = tmp_path / "trace.json"
-
-    session.write_trace_json(
-        path,
-        words,
-        counts={(0, 0): 2},
-        region_names={9: "epilogue"},
-    )
+    path = session.write_trace_json(words)
 
     payload = json.loads(path.read_text())
     assert payload["displayTimeUnit"] == "ns"
@@ -302,7 +322,12 @@ def test_session_write_trace_json_creates_file(tmp_path: Path):
 
 
 def test_session_decode_buffer_rejects_invalid_buffer_length():
-    session = CutezTraceSession(blocks=1, warps_per_block=1, segment_bytes=32)
+    session = CutezTraceSession(
+        blocks_per_sm=1,
+        warps_per_block=1,
+        segment_bytes=32,
+        trace_path="trace.json",
+    )
     words = torch.zeros(session.buffer_numel - 1, dtype=torch.int64)
 
     with pytest.raises(ValueError, match="buffer_numel"):
@@ -310,7 +335,12 @@ def test_session_decode_buffer_rejects_invalid_buffer_length():
 
 
 def test_session_decode_buffer_rejects_invalid_buffer_dtype():
-    session = CutezTraceSession(blocks=1, warps_per_block=1, segment_bytes=32)
+    session = CutezTraceSession(
+        blocks_per_sm=1,
+        warps_per_block=1,
+        segment_bytes=32,
+        trace_path="trace.json",
+    )
     words = torch.zeros(session.buffer_numel, dtype=torch.int32)
 
     with pytest.raises(TypeError, match="torch.int64"):

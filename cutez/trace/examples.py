@@ -8,7 +8,6 @@ import cutlass
 import cutlass.cute as cute
 import torch
 from cutlass import Int32
-from cutlass.cute.runtime import from_dlpack
 
 from .core import SharedStorage, clock_record, finanlize_clock, init_clock
 from .session import CutezTraceSession
@@ -73,19 +72,20 @@ def run_sample_trace(trace_path: str | Path, *, iters: int = 4):
     """Run the 4-warp cutez trace example and write a Chrome trace JSON artifact."""
 
     session = CutezTraceSession(
-        blocks=1,
+        blocks_per_sm=1,
         warps_per_block=WARPS_PER_BLOCK,
         segment_bytes=SEGMENT_BYTES,
+        trace_path=trace_path,
+        region_names=REGION_NAMES,
     )
-    out = session.allocate_buffer()
-    out_cute = from_dlpack(out, assumed_align=8)
+    out, out_cute = session.allocate_buffer()
     compiled = cute.compile(launch_sample_trace, out_cute, Int32(iters))
     compiled(out_cute, Int32(iters))
     torch.cuda.synchronize()
 
-    session.write_trace_json(trace_path, out, region_names=REGION_NAMES)
+    session.write_trace_json(out)
     return {
-        "trace_path": str(trace_path),
+        "trace_path": str(session.trace_path),
         "buffer": out,
         "session": session,
     }
@@ -167,5 +167,5 @@ def run_quack_trace(trace_path: str | Path, *, iters: int = 4):
 if __name__ == "__main__":
     cutez_res = run_sample_trace("trace_cutez.json", iters=4)
     print(cutez_res["trace_path"])
-    #quack_res = run_quack_trace("trace_quack.json", iters=2)
-    #print(quack_res["trace_path"])
+    # quack_res = run_quack_trace("trace_quack.json", iters=2)
+    # print(quack_res["trace_path"])
