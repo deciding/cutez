@@ -19,7 +19,7 @@ from .session import CutezTraceSession
 
 THREADS = 128
 WARPS_PER_BLOCK = THREADS // 32
-SEGMENT_BYTES = 32
+SEGMENT_BYTES = 64
 REGION_NAMES = {1: "outer", 2: "inner"}
 
 
@@ -96,6 +96,48 @@ def launch_sample_trace_warp01(out: cute.Tensor, iters: Int32):
     sample_trace_kernel_warp01(out, iters).launch(grid=(1, 1, 1), block=(THREADS, 1, 1))
 
 
+@cute.kernel
+def sample_trace_kernel_warp0123_add_loop(out: cute.Tensor, iters: Int32):
+    smem = cutlass.utils.SmemAllocator()
+    storage = smem.allocate(SharedStorage)
+    clock_ptr = storage.clock_buf.data_ptr()
+    out_ptr = out.iterator
+
+    wid = cute.arch.make_warp_uniform(cute.arch.warp_idx())
+    seg_addr, out_addr, is_leader = init_clock(clock_ptr, out_ptr, seg_idx=wid, segment_size=SEGMENT_BYTES)
+
+    outer_scope = Int32(1)
+    add_scope = Int32(2)
+    clock_idx = Int32(0)
+    #acc = Int32(wid)
+
+    clock_record(True, outer_scope, clock_idx, seg_addr, is_leader, SEGMENT_BYTES)
+    clock_idx += 1
+    for i in cutlass.range(iters):
+        clock_record(True, add_scope, clock_idx, seg_addr, is_leader, SEGMENT_BYTES)
+        clock_idx += 1
+        #acc = acc + Int32(i + wid + 1)
+        clock_record(
+            False, add_scope, clock_idx, seg_addr, is_leader, SEGMENT_BYTES
+        )
+        clock_idx += 1
+    clock_record(False, outer_scope, clock_idx, seg_addr, is_leader, SEGMENT_BYTES)
+
+    ## Keep the arithmetic live so the loop is not trivially dead.
+    #if is_leader:
+    #    cute.printf(acc)
+
+    cute.arch.sync_threads()
+    finanlize_clock(seg_addr, out_addr, SEGMENT_BYTES)
+
+
+@cute.jit
+def launch_sample_trace_warp0123_add_loop(out: cute.Tensor, iters: Int32):
+    sample_trace_kernel_warp0123_add_loop(out, iters).launch(
+        grid=(1, 1, 1), block=(THREADS, 1, 1)
+    )
+
+
 def run_sample_trace(
     trace_path: str | Path, *, iters: int = 1, active_warps: tuple[int, ...] = (0,)
 ):
@@ -118,7 +160,11 @@ def run_sample_trace(
     )
     out = session.allocate_buffer()
     out_cute = from_dlpack(out, assumed_align=8)
-    launcher = launch_sample_trace_warp0 if active_warps == (0,) else launch_sample_trace_warp01
+    launcher = (
+        launch_sample_trace_warp0
+        if active_warps == (0,)
+        else launch_sample_trace_warp01
+    )
     compiled = cute.compile(launcher, out_cute, Int32(iters))
     compiled(out_cute, Int32(iters))
     torch.cuda.synchronize()
@@ -132,5 +178,46 @@ def run_sample_trace(
         "session": session,
     }
 
-if __name__ == '__main__':
-    res = run_sample_trace('trace.json', iters=1, active_warps=(0, 1))
+
+def run_sample_trace_four_warp_add_loop(trace_path: str | Path, *, iters: int = 8):
+    """Run a 4-warp addition-loop trace that intentionally wraps the ring buffer."""
+
+    #region_names = {
+    #    1: "warp0_outer",
+    #    2: "warp1_outer",
+    #    3: "warp2_outer",
+    #    4: "warp3_outer",
+    #    10: "warp0_add",
+    #    11: "warp1_add",
+    #    12: "warp2_add",
+    #    13: "warp3_add",
+    #}
+
+    session = CutezTraceSession(
+        blocks=1,
+        warps_per_block=WARPS_PER_BLOCK,
+        segment_bytes=SEGMENT_BYTES,
+    )
+    out = session.allocate_buffer()
+    out_cute = from_dlpack(out, assumed_align=8)
+    compiled = cute.compile(
+        launch_sample_trace_warp0123_add_loop, out_cute, Int32(iters)
+    )
+    compiled(out_cute, Int32(iters))
+    torch.cuda.synchronize()
+
+    counts = {(0, warp): 2 + 2 * iters for warp in (0, 1, 2, 3)}
+
+    print(out)
+
+    session.write_trace_json(trace_path, out, counts=counts, region_names=REGION_NAMES)
+    return {
+        "trace_path": str(trace_path),
+        "counts": counts,
+        "buffer": out,
+        "session": session,
+    }
+
+
+if __name__ == "__main__":
+    res = run_sample_trace_four_warp_add_loop("trace.json", iters=2)
