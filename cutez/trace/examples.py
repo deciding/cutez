@@ -1,9 +1,4 @@
-"""Canonical example kernel and host helper for ``cutez_trace``.
-
-This example records four warp-owned trace segments in one block. Each warp
-emits one outer scope and repeated inner add-scope records so the per-warp ring
-buffer wraps once `iters` is large enough.
-"""
+"""Canonical example kernels and host helpers for ``cutez_trace`` comparison."""
 
 from __future__ import annotations
 
@@ -59,7 +54,7 @@ def launch_sample_trace(out: cute.Tensor, iters: Int32):
 
 
 def run_sample_trace(trace_path: str | Path, *, iters: int = 4):
-    """Run the 4-warp trace example and write a Chrome trace JSON artifact."""
+    """Run the 4-warp cutez trace example and write a Chrome trace JSON artifact."""
 
     session = CutezTraceSession(
         blocks=1,
@@ -82,5 +77,42 @@ def run_sample_trace(trace_path: str | Path, *, iters: int = 4):
     }
 
 
+def run_quack_trace(trace_path: str | Path, *, iters: int = 4):
+    """Run a QuACK-based trace with the same 4-warp loop shape for comparison."""
+
+    from cutlass.cutlass_dsl import Int64
+    from quack.trace import TraceContext, TraceSession
+
+    @cute.kernel
+    def sample_quack_trace_kernel(trace_ptr: Int64 | None, inner_iters: Int32):
+        ctx = TraceContext.create(trace_ptr)
+
+        ctx.b("outer")
+        for _ in cutlass.range(inner_iters):
+            ctx.b("add")
+            ctx.e("add")
+        ctx.e("outer")
+        ctx.flush()
+
+    @cute.jit
+    def launch_quack_trace(trace_ptr: Int64 | None, inner_iters: Int32):
+        sample_quack_trace_kernel(trace_ptr, inner_iters).launch(
+            grid=(1, 1, 1), block=(THREADS, 1, 1)
+        )
+
+    trace_path = str(trace_path)
+    with TraceSession(trace_path, grid_size=1, block_size=THREADS) as session:
+        launch_quack_trace(session.ptr, Int32(iters))
+
+    return {
+        "trace_path": trace_path,
+        "trace_enabled": session.ptr is not None,
+        "session": session,
+    }
+
+
 if __name__ == "__main__":
-    run_sample_trace("trace.json", iters=2)
+    cutez_res = run_sample_trace("trace_cutez.json", iters=4)
+    print(cutez_res["trace_path"])
+    #quack_res = run_quack_trace("trace_quack.json", iters=2)
+    #print(quack_res["trace_path"])

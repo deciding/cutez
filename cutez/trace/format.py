@@ -37,7 +37,9 @@ class ChromeTraceEvent:
     scope_id: int
 
 
-def decode_packed_event(word: int, *, block: int, warp: int, logical_index: int) -> PackedEvent:
+def decode_packed_event(
+    word: int, *, block: int, warp: int, logical_index: int
+) -> PackedEvent:
     """Decode one packed 64-bit trace word into a host-side event record.
 
     The caller passes the raw event word plus its `(block, warp)` ownership and
@@ -130,14 +132,15 @@ def trace_json_payload(events: list[ChromeTraceEvent]) -> dict:
     if not events:
         return {"displayTimeUnit": "ns", "traceEvents": []}
     min_ts = min(event.ts for event in events)
+    scale = 1e-3
     return {
         "displayTimeUnit": "ns",
         "traceEvents": [
             {
                 "name": event.name,
                 "ph": "X",
-                "ts": event.ts - min_ts,
-                "dur": event.dur,
+                "ts": (event.ts - min_ts) * scale,
+                "dur": event.dur * scale,
                 "pid": event.pid,
                 "tid": event.tid,
                 "args": {

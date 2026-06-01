@@ -18,7 +18,12 @@ from pathlib import Path
 
 import torch
 
-from .format import ChromeTraceEvent, decode_ring_events, pair_complete_events, trace_json_payload
+from .format import (
+    ChromeTraceEvent,
+    decode_ring_events,
+    pair_complete_events,
+    trace_json_payload,
+)
 
 
 @dataclass
@@ -53,7 +58,9 @@ class CutezTraceSession:
 
     def ticks_to_ns(self, ticks: int, *, sm_clock_khz: int | None = None) -> int:
         # `clock_rate` is reported in kHz, so one tick is 1e6 / kHz nanoseconds.
-        clock_khz = sm_clock_khz if sm_clock_khz is not None else self.resolve_sm_clock_khz()
+        clock_khz = (
+            sm_clock_khz if sm_clock_khz is not None else self.resolve_sm_clock_khz()
+        )
         return int(round((ticks * 1_000_000.0) / clock_khz))
 
     def _events_to_chrome_time(
@@ -84,7 +91,9 @@ class CutezTraceSession:
         `PackedEvent` list reconstructed from that warp's segment.
         """
         if words.dtype != torch.int64:
-            raise TypeError(f"decode_buffer expects a torch.int64 buffer, got {words.dtype}")
+            raise TypeError(
+                f"decode_buffer expects a torch.int64 buffer, got {words.dtype}"
+            )
         if words.numel() != self.buffer_numel:
             raise ValueError(
                 f"decode_buffer expected buffer_numel={self.buffer_numel}, got {words.numel()}"
@@ -125,7 +134,9 @@ class CutezTraceSession:
         for events in decoded.values():
             paired.extend(pair_complete_events(events, region_names=region_names))
         sm_clock_khz = self.resolve_sm_clock_khz()
-        payload = trace_json_payload(self._events_to_chrome_time(paired, sm_clock_khz=sm_clock_khz))
+        payload = trace_json_payload(
+            self._events_to_chrome_time(paired, sm_clock_khz=sm_clock_khz)
+        )
         for event in payload["traceEvents"]:
             event["args"]["clock_rate_khz"] = sm_clock_khz
         path = Path(path)

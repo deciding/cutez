@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import torch
 
-sys.path.insert(0, '.')
+sys.path.insert(0, ".")
 from trace.format import (
     ChromeTraceEvent,
     PackedEvent,
@@ -19,7 +19,9 @@ from trace.examples import run_sample_trace
 from trace.session import CutezTraceSession
 
 
-def pack_event(clock_lo: int, clock_hi_low11: int, scope_id: int, is_start: bool) -> int:
+def pack_event(
+    clock_lo: int, clock_hi_low11: int, scope_id: int, is_start: bool
+) -> int:
     hi = (clock_hi_low11 & 0x7FF) | ((scope_id & 0xFF) << 23)
     if not is_start:
         hi |= 1 << 31
@@ -131,6 +133,37 @@ def test_trace_json_payload_emits_chrome_trace_shape():
     assert payload["displayTimeUnit"] == "ns"
     assert payload["traceEvents"][0]["ph"] == "X"
     assert payload["traceEvents"][0]["name"] == "load"
+
+
+def test_trace_json_payload_scales_times_by_one_thousandth():
+    event = ChromeTraceEvent(
+        name="load",
+        ts=1000,
+        dur=500,
+        pid=0,
+        tid=32,
+        block=0,
+        warp=1,
+        scope_id=3,
+    )
+    later = ChromeTraceEvent(
+        name="store",
+        ts=2500,
+        dur=1000,
+        pid=0,
+        tid=32,
+        block=0,
+        warp=1,
+        scope_id=4,
+    )
+
+    payload = trace_json_payload([event, later])
+
+    assert payload["displayTimeUnit"] == "ns"
+    assert payload["traceEvents"][0]["ts"] == 0.0
+    assert payload["traceEvents"][0]["dur"] == 0.5
+    assert payload["traceEvents"][1]["ts"] == 1.5
+    assert payload["traceEvents"][1]["dur"] == 1.0
 
 
 def test_public_package_exports_include_session_and_runner():

@@ -29,19 +29,36 @@ User code is responsible for:
 nanoseconds with the device SM clock rate reported by CUDA. That conversion is
 approximate host-side scaling, not calibrated wall-clock timing.
 
-The shipped example records all four warps in one 128-thread block. Each warp
-emits one outer scope and repeated inner add scopes, so the ring buffer wraps
-once `iters` is large enough.
+The shipped `cutez.trace` example records all four warps in one 128-thread
+block. Each warp emits one outer scope and repeated inner add scopes, so the
+ring buffer wraps once `iters` is large enough.
+
+`examples.py` also includes a QuACK-based comparison path that traces the same
+4-warp loop shape using `quack.trace.TraceSession` and `TraceContext`.
 
 ## Example
 
 ```python
 from pathlib import Path
 
-from cutez.trace.examples import run_sample_trace
+from cutez.trace.examples import run_quack_trace, run_sample_trace
 
-result = run_sample_trace(Path("trace.json"), iters=4)
-print(result["trace_path"])
+cutez_result = run_sample_trace(Path("trace_cutez.json"), iters=4)
+quack_result = run_quack_trace(Path("trace_quack.json"), iters=4)
+print(cutez_result["trace_path"])
+print(quack_result["trace_path"])
+```
+
+## Running in the `cutez` conda env
+
+```bash
+conda run -n cutez python -m cutez.trace.examples
+```
+
+To enable QuACK instrumentation, run with:
+
+```bash
+conda run -n cutez env QUACK_TRACE=1 python -m cutez.trace.examples
 ```
 
 ## Copying To Another Repo
@@ -52,4 +69,5 @@ part of the same folder.
 
 ## Viewing the trace
 
-Open the generated `trace.json` in Perfetto or `chrome://tracing`.
+Open the generated `trace_cutez.json` or `trace_quack.json` in Perfetto or
+`chrome://tracing`.
