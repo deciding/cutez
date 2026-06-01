@@ -78,15 +78,14 @@ def run_sample_trace(trace_path: str | Path, *, iters: int = 4):
         trace_path=trace_path,
         region_names=REGION_NAMES,
     )
-    out, out_cute = session.allocate_buffer()
-    compiled = cute.compile(launch_sample_trace, out_cute, Int32(iters))
-    compiled(out_cute, Int32(iters))
+    compiled = cute.compile(launch_sample_trace, session.buffer, Int32(iters))
+    compiled(session.buffer, Int32(iters))
     torch.cuda.synchronize()
 
-    session.write_trace_json(out)
+    session.write_trace_json()
     return {
         "trace_path": str(session.trace_path),
-        "buffer": out,
+        "buffer": session.buffer_tensor,
         "session": session,
     }
 

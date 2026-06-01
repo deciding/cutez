@@ -44,16 +44,13 @@ class CutezTraceSession:
         self.total_segments = self.blocks_per_sm * self.warps_per_block
         self.buffer_numel = self.total_segments * self.segment_words
         self.trace_path = Path(self.trace_path)
+        self.buffer_tensor = torch.zeros(
+            self.buffer_numel, dtype=torch.int64, device=self.device
+        )
+        self.buffer = from_dlpack(self.buffer_tensor, assumed_align=8)
 
-    def allocate_buffer(self) -> tuple[torch.Tensor, object]:
-        """Allocate the flat GMEM output buffer expected by the example kernels.
-
-        The returned `torch.int64` tensor has one contiguous segment per
-        `(block, wid)` pair, where the warp id is also the segment id used by
-        `my_trace.init_clock(...)` and `my_trace.finanlize_clock(...)`.
-        """
-        out = torch.zeros(self.buffer_numel, dtype=torch.int64, device=self.device)
-        return out, from_dlpack(out, assumed_align=8)
+    def reset_buffer(self):
+        self.buffer_tensor.zero_()
 
     def resolve_sm_clock_khz(self) -> int:
         if self.sm_clock_khz is not None:
@@ -85,13 +82,18 @@ class CutezTraceSession:
             for event in events
         ]
 
-    def decode_buffer(self, words: torch.Tensor) -> dict[tuple[int, int], list]:
+    def decode_buffer(
+        self, words: torch.Tensor | None = None
+    ) -> dict[tuple[int, int], list]:
         """Decode the flat output buffer into per-warp event lists.
 
-        The caller passes the flat `torch.int64` buffer. Each warp-owned segment
-        is decoded by filtering zero-valued unused slots and ordering the
-        retained nonzero events chronologically by reconstructed clock value.
+        The caller may pass a flat `torch.int64` buffer explicitly; otherwise
+        the session decodes its owned `buffer_tensor`. Each warp-owned segment is
+        decoded by filtering zero-valued unused slots and ordering the retained
+        nonzero events chronologically by reconstructed clock value.
         """
+        if words is None:
+            words = self.buffer_tensor
         if words.dtype != torch.int64:
             raise TypeError(
                 f"decode_buffer expects a torch.int64 buffer, got {words.dtype}"
@@ -115,15 +117,14 @@ class CutezTraceSession:
                 )
         return out
 
-    def write_trace_json(self, words: torch.Tensor) -> Path:
+    def write_trace_json(self) -> Path:
         """Decode a trace buffer and write a Chrome trace JSON file.
 
-        The caller provides the raw flat buffer only. This method decodes each
-        `(block, wid)` segment from its retained nonzero entries, pairs
+        This method decodes the session-owned flat buffer, pairs
         begin/end events, converts `%clock` ticks to approximate nanoseconds
         using the device SM clock rate, and returns the written path.
         """
-        decoded = self.decode_buffer(words)
+        decoded = self.decode_buffer(self.buffer_tensor)
         paired = []
         for events in decoded.values():
             paired.extend(pair_complete_events(events, region_names=self.region_names))
