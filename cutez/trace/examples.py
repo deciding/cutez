@@ -70,15 +70,10 @@ def run_sample_trace(trace_path: str | Path, *, iters: int = 4):
         warps_per_block=WARPS_PER_BLOCK,
         trace_path=trace_path,
     )
-    trace_cfg = TraceConfig(
-        block_smem_bytes=session.block_smem_bytes,
-        segment_bytes=session.segment_bytes,
-        smem_words=session.block_smem_words,
-    )
     compiled = cute.compile(
-        launch_sample_trace, session.buffer, Int32(iters), trace_cfg
+        launch_sample_trace, session.buffer, Int32(iters), session.trace_config
     )
-    compiled(session.buffer, Int32(iters), trace_cfg)
+    compiled(session.buffer, Int32(iters), session.trace_config)
     torch.cuda.synchronize()
 
     # Uncomment for raw per-block/warp clock diagnostics before JSON normalization.
@@ -151,7 +146,7 @@ def run_quack_trace(trace_path: str | Path, *, iters: int = 4):
     @cute.jit
     def launch_quack_trace(trace_ptr: None, inner_iters: Int32):
         sample_quack_trace_kernel(trace_ptr, inner_iters).launch(
-            grid=(1, 1, 1), block=(THREADS, 1, 1)
+            grid=(TOTAL_BLOCKS, 1, 1), block=(THREADS, 1, 1)
         )
 
     trace_path = str(trace_path)

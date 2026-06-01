@@ -19,6 +19,7 @@ from pathlib import Path
 import torch
 from cutlass.cute.runtime import from_dlpack
 
+from .core import TraceConfig
 from .format import (
     ChromeTraceEvent,
     decode_ring_events,
@@ -49,6 +50,11 @@ class CutezTraceSession:
         self.total_segments = self.total_blocks * self.warps_per_block
         self.buffer_numel = self.block_smem_words * self.total_blocks
         self.trace_path = Path(self.trace_path)
+        self.trace_config = TraceConfig(
+            block_smem_bytes=self.block_smem_bytes,
+            segment_bytes=self.segment_bytes,
+            smem_words=self.block_smem_words,
+        )
         self.buffer_tensor = torch.zeros(
             self.buffer_numel, dtype=torch.int64, device=self.device
         )
