@@ -14,7 +14,9 @@ from .session import CutezTraceSession
 
 THREADS = 128
 WARPS_PER_BLOCK = THREADS // 32
-SEGMENT_BYTES = 64
+BLOCKS_PER_SM = 1
+TOTAL_BLOCKS = 2
+SM_SMEM_AVAILABLE_BYTES = 256
 REGION_NAMES = {1: "outer", 2: "add"}
 
 
@@ -57,7 +59,7 @@ def sample_trace_kernel(out: cute.Tensor, iters: Int32, trace_cfg: TraceConfig):
 @cute.jit
 def launch_sample_trace(out: cute.Tensor, iters: Int32, trace_cfg: TraceConfig):
     sample_trace_kernel(out, iters, trace_cfg).launch(
-        grid=(1, 1, 1), block=(THREADS, 1, 1)
+        grid=(TOTAL_BLOCKS, 1, 1), block=(THREADS, 1, 1)
     )
 
 
@@ -65,15 +67,17 @@ def run_sample_trace(trace_path: str | Path, *, iters: int = 4):
     """Run the 4-warp cutez trace example and write a Chrome trace JSON artifact."""
 
     session = CutezTraceSession(
-        blocks_per_sm=1,
+        sm_smem_available_bytes=SM_SMEM_AVAILABLE_BYTES,
+        blocks_per_sm=BLOCKS_PER_SM,
+        total_blocks=TOTAL_BLOCKS,
         warps_per_block=WARPS_PER_BLOCK,
-        segment_bytes=SEGMENT_BYTES,
         trace_path=trace_path,
         region_names=REGION_NAMES,
     )
     trace_cfg = TraceConfig(
-        segment_bytes=SEGMENT_BYTES,
-        smem_words=WARPS_PER_BLOCK * (SEGMENT_BYTES // 8),
+        block_smem_bytes=session.block_smem_bytes,
+        segment_bytes=session.segment_bytes,
+        smem_words=session.block_smem_words,
     )
     compiled = cute.compile(
         launch_sample_trace, session.buffer, Int32(iters), trace_cfg

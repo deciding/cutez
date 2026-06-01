@@ -25,10 +25,12 @@ def init_clock(
     out_ptr,
     seg_idx: cutlass.Int32,
     segment_size: cutlass.Int32,
+    block_smem_bytes: cutlass.Int32,
 ):
     """Compute SMEM and GMEM segment pointers for one warp-owned trace segment."""
     seg_idx = cutlass.Int32(seg_idx)
     segment_size = cutlass.Int32(segment_size)
+    block_smem_bytes = cutlass.Int32(block_smem_bytes)
     smem_base_llvm = clock_ptr.llvm_ptr
     i32 = ir.IntegerType.get_signless(32)
     i64 = ir.IntegerType.get_signless(64)
@@ -42,8 +44,21 @@ def init_clock(
 
     gmem_base_llvm = out_ptr.llvm_ptr
     gmem_base_i64 = llvm.PtrToIntOp(i64, gmem_base_llvm).result
+    bidx, bidy, bidz = cute.arch.block_idx()
+    gdx, gdy, _ = cute.arch.grid_dim()
+    block_xy = llvm.MulOp(bidy, gdx, 0).result
+    block_z = llvm.MulOp(bidz, llvm.MulOp(gdx, gdy, 0).result, 0).result
+    linear_block = llvm.AddOp(llvm.AddOp(bidx, block_xy, 0).result, block_z, 0).result
+    block_smem_bytes_i64 = llvm.ZExtOp(i64, block_smem_bytes).result
+    block_base_off_i64 = llvm.MulOp(
+        llvm.ZExtOp(i64, linear_block).result, block_smem_bytes_i64, 0
+    ).result
     seg_base_off_i64 = llvm.ZExtOp(i64, seg_base_off).result
-    out_addr = llvm.AddOp(gmem_base_i64, seg_base_off_i64, 0).result
+    out_addr = llvm.AddOp(
+        gmem_base_i64,
+        llvm.AddOp(block_base_off_i64, seg_base_off_i64, 0).result,
+        0,
+    ).result
 
     tidx, _, _ = cute.arch.thread_idx()
     tidx_in_warp = llvm.URemOp(tidx, wthreads).result
@@ -54,6 +69,7 @@ def init_clock(
 
 @dataclass
 class TraceConfig(ParamsBase):
+    block_smem_bytes: int
     segment_bytes: int
     smem_words: int
 
@@ -85,6 +101,7 @@ class CutezTracer:
             out_ptr,
             seg_idx=seg_idx,
             segment_size=cutlass.Int32(cfg.segment_bytes),
+            block_smem_bytes=cutlass.Int32(cfg.block_smem_bytes),
         )
         segment_size = cutlass.Int32(cfg.segment_bytes)
         return cls(

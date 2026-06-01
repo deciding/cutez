@@ -29,20 +29,24 @@ from .format import (
 
 @dataclass
 class CutezTraceSession:
+    sm_smem_available_bytes: int
     blocks_per_sm: int
+    total_blocks: int
     warps_per_block: int
-    segment_bytes: int
     trace_path: str | Path
     region_names: dict[int, str] | None = None
     device: str | torch.device = "cuda"
     sm_clock_khz: int | None = None
 
     def __post_init__(self):
+        self.block_smem_bytes = self.sm_smem_available_bytes // self.blocks_per_sm
+        self.segment_bytes = self.block_smem_bytes // self.warps_per_block
         if self.segment_bytes % 8 != 0:
-            raise ValueError("segment_bytes must be divisible by 8")
+            raise ValueError("derived segment_bytes must be divisible by 8")
         self.segment_words = self.segment_bytes // 8
-        self.total_segments = self.blocks_per_sm * self.warps_per_block
-        self.buffer_numel = self.total_segments * self.segment_words
+        self.block_smem_words = self.block_smem_bytes // 8
+        self.total_segments = self.total_blocks * self.warps_per_block
+        self.buffer_numel = self.block_smem_words * self.total_blocks
         self.trace_path = Path(self.trace_path)
         self.buffer_tensor = torch.zeros(
             self.buffer_numel, dtype=torch.int64, device=self.device
@@ -105,7 +109,7 @@ class CutezTraceSession:
 
         flat = words.detach().cpu().reshape(-1).tolist()
         out = {}
-        for block in range(self.blocks_per_sm):
+        for block in range(self.total_blocks):
             for warp in range(self.warps_per_block):
                 segment = block * self.warps_per_block + warp
                 start = segment * self.segment_words

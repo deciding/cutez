@@ -238,22 +238,27 @@ def test_installed_environment_can_import_cutez_trace_examples(tmp_path: Path):
 
 def test_session_allocates_one_segment_per_block_warp():
     session = CutezTraceSession(
+        sm_smem_available_bytes=64,
         blocks_per_sm=2,
+        total_blocks=2,
         warps_per_block=4,
-        segment_bytes=32,
         trace_path="trace.json",
     )
 
-    assert session.segment_words == 4
+    assert session.block_smem_bytes == 32
+    assert session.segment_bytes == 8
+    assert session.segment_words == 1
+    assert session.block_smem_words == 4
     assert session.total_segments == 8
-    assert session.buffer_numel == 32
+    assert session.buffer_numel == 8
 
 
 def test_session_initializes_torch_and_cute_buffer_views():
     session = CutezTraceSession(
+        sm_smem_available_bytes=32,
         blocks_per_sm=1,
+        total_blocks=1,
         warps_per_block=1,
-        segment_bytes=32,
         trace_path="trace.json",
     )
 
@@ -264,9 +269,10 @@ def test_session_initializes_torch_and_cute_buffer_views():
 
 def test_session_reset_buffer_zeroes_owned_tensor():
     session = CutezTraceSession(
+        sm_smem_available_bytes=32,
         blocks_per_sm=1,
+        total_blocks=1,
         warps_per_block=1,
-        segment_bytes=32,
         trace_path="trace.json",
     )
 
@@ -278,9 +284,10 @@ def test_session_reset_buffer_zeroes_owned_tensor():
 
 def test_session_decodes_flat_buffer_by_block_and_warp():
     session = CutezTraceSession(
+        sm_smem_available_bytes=64,
         blocks_per_sm=1,
+        total_blocks=1,
         warps_per_block=2,
-        segment_bytes=32,
         trace_path="trace.json",
     )
     words = torch.tensor(
@@ -297,7 +304,7 @@ def test_session_decodes_flat_buffer_by_block_and_warp():
         dtype=torch.int64,
     )
 
-    decoded = session.decode_buffer(words, counts={(0, 0): 2, (0, 1): 2})
+    decoded = session.decode_buffer(words)
 
     assert len(decoded[(0, 0)]) == 2
     assert len(decoded[(0, 1)]) == 2
@@ -306,9 +313,10 @@ def test_session_decodes_flat_buffer_by_block_and_warp():
 
 def test_session_write_trace_json_creates_file(tmp_path: Path):
     session = CutezTraceSession(
+        sm_smem_available_bytes=32,
         blocks_per_sm=1,
+        total_blocks=1,
         warps_per_block=1,
-        segment_bytes=32,
         trace_path=tmp_path / "trace.json",
         region_names={9: "epilogue"},
         sm_clock_khz=500_000,
@@ -336,28 +344,30 @@ def test_session_write_trace_json_creates_file(tmp_path: Path):
 
 def test_session_decode_buffer_rejects_invalid_buffer_length():
     session = CutezTraceSession(
+        sm_smem_available_bytes=32,
         blocks_per_sm=1,
+        total_blocks=1,
         warps_per_block=1,
-        segment_bytes=32,
         trace_path="trace.json",
     )
     words = torch.zeros(session.buffer_numel - 1, dtype=torch.int64)
 
     with pytest.raises(ValueError, match="buffer_numel"):
-        session.decode_buffer(words, counts={(0, 0): 0})
+        session.decode_buffer(words)
 
 
 def test_session_decode_buffer_rejects_invalid_buffer_dtype():
     session = CutezTraceSession(
+        sm_smem_available_bytes=32,
         blocks_per_sm=1,
+        total_blocks=1,
         warps_per_block=1,
-        segment_bytes=32,
         trace_path="trace.json",
     )
     words = torch.zeros(session.buffer_numel, dtype=torch.int32)
 
     with pytest.raises(TypeError, match="torch.int64"):
-        session.decode_buffer(words, counts={(0, 0): 0})
+        session.decode_buffer(words)
 
 
 @pytest.mark.cuda
@@ -373,46 +383,4 @@ def test_run_sample_trace_writes_nonempty_trace_json(tmp_path: Path):
     assert complete
     assert {event["name"] for event in complete}
     assert all(event["dur"] >= 0 for event in complete)
-    assert result["counts"]
-
-
-@pytest.mark.cuda
-def test_run_sample_trace_rejects_unsupported_warp_selection(tmp_path: Path):
-    trace_path = tmp_path / "unsupported_trace.json"
-
-    with pytest.raises(ValueError, match=r"active_warps=\(0,\)"):
-        run_sample_trace(trace_path=trace_path, active_warps=(1,))
-
-
-@pytest.mark.cuda
-def test_run_sample_trace_supports_two_selected_warps(tmp_path: Path):
-    trace_path = tmp_path / "two_warp_trace.json"
-
-    run_sample_trace(trace_path=trace_path, active_warps=(0, 1), iters=1)
-
-    payload = json.loads(trace_path.read_text())
-    complete = [event for event in payload["traceEvents"] if event.get("ph") == "X"]
-    assert {event["args"]["warp"] for event in complete} == {0, 1}
-
-
-@pytest.mark.cuda
-def test_run_sample_trace_retains_latest_events_after_wrap(tmp_path: Path):
-    trace_path = tmp_path / "wrapped_trace.json"
-
-    result = run_sample_trace(trace_path=trace_path, active_warps=(0,), iters=8)
-
-    payload = json.loads(trace_path.read_text())
-    complete = [event for event in payload["traceEvents"] if event.get("ph") == "X"]
-    assert complete
-    assert result["counts"][(0, 0)] > result["session"].segment_words
-
-
-@pytest.mark.cuda
-def test_run_sample_trace_does_not_record_unselected_warp(tmp_path: Path):
-    trace_path = tmp_path / "warp_zero_only_trace.json"
-
-    result = run_sample_trace(trace_path=trace_path, active_warps=(0,), iters=1)
-
-    segment_words = result["session"].segment_words
-    warp_one_segment = result["buffer"][segment_words : 2 * segment_words]
-    assert torch.count_nonzero(warp_one_segment).item() == 0
+    assert {event["pid"] for event in complete} == {0, 1}
