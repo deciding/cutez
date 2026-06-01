@@ -83,11 +83,9 @@ def run_sample_trace(trace_path: str | Path, *, iters: int = 4):
     compiled(out_cute, Int32(iters))
     torch.cuda.synchronize()
 
-    counts = {(0, warp): 2 + 2 * iters for warp in (0, 1, 2, 3)}
-    session.write_trace_json(trace_path, out, counts=counts, region_names=REGION_NAMES)
+    session.write_trace_json(trace_path, out, region_names=REGION_NAMES)
     return {
         "trace_path": str(trace_path),
-        "counts": counts,
         "buffer": out,
         "session": session,
     }
@@ -107,7 +105,7 @@ def run_quack_trace(trace_path: str | Path, *, iters: int = 4):
         tidx, _, _ = cute.arch.thread_idx()
 
         ctx.b("outer")
-        #for i in cutlass.range(inner_iters):
+        # for i in cutlass.range(inner_iters):
         #    ctx.b("add")
 
         #    step = Int32(i + wid + 1)
@@ -167,7 +165,7 @@ def run_quack_trace(trace_path: str | Path, *, iters: int = 4):
 
 
 if __name__ == "__main__":
-    # cutez_res = run_sample_trace("trace_cutez.json", iters=2)
-    # print(cutez_res["trace_path"])
-    quack_res = run_quack_trace("trace_quack.json", iters=2)
-    print(quack_res["trace_path"])
+    cutez_res = run_sample_trace("trace_cutez.json", iters=4)
+    print(cutez_res["trace_path"])
+    #quack_res = run_quack_trace("trace_quack.json", iters=2)
+    #print(quack_res["trace_path"])

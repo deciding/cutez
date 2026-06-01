@@ -60,34 +60,32 @@ def decode_packed_event(
     )
 
 
-def decode_ring_events(
-    words: list[int], *, block: int, warp: int, total_event_count: int
-) -> list[PackedEvent]:
+def decode_ring_events(words: list[int], *, block: int, warp: int) -> list[PackedEvent]:
     """Reconstruct retained events from one warp-owned ring segment.
 
-    `words` is the stored segment for one `(block, warp)` pair and
-    `total_event_count` is the caller-managed `clock_idx` total for that same
-    warp. The return value is ordered from oldest retained event to newest,
-    with logical indices that continue across ring wrap.
+    This decoder treats zero-valued entries as unused slots, decodes every
+    nonzero entry in the segment, and orders the retained events by reconstructed
+    clock value. It intentionally does not require caller-provided event counts.
     """
-    capacity = len(words)
-    if capacity == 0:
-        return []
-    retained = min(total_event_count, capacity)
-    start = total_event_count % capacity if total_event_count > capacity else 0
-    events = []
-    first_logical = total_event_count - retained
-    for i in range(retained):
-        idx = (start + i) % capacity
-        events.append(
-            decode_packed_event(
-                words[idx],
-                block=block,
-                warp=warp,
-                logical_index=first_logical + i,
-            )
+    decoded = [
+        decode_packed_event(word, block=block, warp=warp, logical_index=i)
+        for i, word in enumerate(words)
+        if word != 0
+    ]
+    decoded.sort(key=lambda event: (event.raw_clock, event.logical_index))
+    return [
+        PackedEvent(
+            word=event.word,
+            block=event.block,
+            warp=event.warp,
+            logical_index=i,
+            clock_lo=event.clock_lo,
+            clock_hi_low11=event.clock_hi_low11,
+            scope_id=event.scope_id,
+            is_start=event.is_start,
         )
-    return events
+        for i, event in enumerate(decoded)
+    ]
 
 
 def pair_complete_events(

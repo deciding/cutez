@@ -80,15 +80,12 @@ class CutezTraceSession:
             for event in events
         ]
 
-    def decode_buffer(
-        self, words: torch.Tensor, *, counts: dict[tuple[int, int], int]
-    ) -> dict[tuple[int, int], list]:
+    def decode_buffer(self, words: torch.Tensor) -> dict[tuple[int, int], list]:
         """Decode the flat output buffer into per-warp event lists.
 
-        The caller passes the flat `torch.int64` buffer and `counts[(block,
-        warp)]`, where each count is the total `clock_idx` value produced for
-        that warp. The return value maps `(block, warp)` to the retained
-        `PackedEvent` list reconstructed from that warp's segment.
+        The caller passes the flat `torch.int64` buffer. Each warp-owned segment
+        is decoded by filtering zero-valued unused slots and ordering the
+        retained nonzero events chronologically by reconstructed clock value.
         """
         if words.dtype != torch.int64:
             raise TypeError(
@@ -110,7 +107,6 @@ class CutezTraceSession:
                     flat[start:stop],
                     block=block,
                     warp=warp,
-                    total_event_count=counts.get((block, warp), 0),
                 )
         return out
 
@@ -118,18 +114,16 @@ class CutezTraceSession:
         self,
         path: str | Path,
         words: torch.Tensor,
-        *,
-        counts: dict[tuple[int, int], int],
         region_names: dict[int, str] | None = None,
     ) -> Path:
         """Decode a trace buffer and write a Chrome trace JSON file.
 
-        The caller provides the raw buffer plus per-warp `clock_idx` totals.
-        This method decodes each `(block, wid)` segment, pairs begin/end events,
-        converts `%clock` ticks to approximate nanoseconds using the device SM
-        clock rate, and returns the written path.
+        The caller provides the raw flat buffer only. This method decodes each
+        `(block, wid)` segment from its retained nonzero entries, pairs
+        begin/end events, converts `%clock` ticks to approximate nanoseconds
+        using the device SM clock rate, and returns the written path.
         """
-        decoded = self.decode_buffer(words, counts=counts)
+        decoded = self.decode_buffer(words)
         paired = []
         for events in decoded.values():
             paired.extend(pair_complete_events(events, region_names=region_names))
