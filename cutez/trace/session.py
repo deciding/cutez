@@ -141,3 +141,24 @@ class CutezTraceSession:
         self.trace_path.parent.mkdir(parents=True, exist_ok=True)
         self.trace_path.write_text(json.dumps(payload))
         return self.trace_path
+
+    def debug_dump_segments(self, words: torch.Tensor | None = None) -> dict:
+        """Return raw retained-clock and paired-event diagnostics per block/warp.
+
+        This is a host-side debugging helper for investigating decode issues before
+        trace JSON normalization.
+        """
+        decoded = self.decode_buffer(words)
+        debug = {}
+        for block in range(self.total_blocks):
+            for warp in range(self.warps_per_block):
+                events = decoded[(block, warp)]
+                paired = pair_complete_events(events, region_names=self.region_names)
+                debug[(block, warp)] = {
+                    "raw_clocks": [event.raw_clock for event in events],
+                    "scopes": [event.scope_id for event in events],
+                    "is_start": [event.is_start for event in events],
+                    "paired_starts": [event.ts for event in paired],
+                    "paired_durations": [event.dur for event in paired],
+                }
+        return debug

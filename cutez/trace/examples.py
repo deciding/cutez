@@ -15,8 +15,8 @@ from .session import CutezTraceSession
 THREADS = 128
 WARPS_PER_BLOCK = THREADS // 32
 BLOCKS_PER_SM = 1
-TOTAL_BLOCKS = 2
-SM_SMEM_AVAILABLE_BYTES = 256
+TOTAL_BLOCKS = 16
+SM_SMEM_AVAILABLE_BYTES = 512
 REGION_NAMES = {1: "outer", 2: "add"}
 
 
@@ -84,6 +84,9 @@ def run_sample_trace(trace_path: str | Path, *, iters: int = 4):
     )
     compiled(session.buffer, Int32(iters), trace_cfg)
     torch.cuda.synchronize()
+
+    # Uncomment for raw per-block/warp clock diagnostics before JSON normalization.
+    # print(session.debug_dump_segments())
 
     session.write_trace_json()
     return {
