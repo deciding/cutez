@@ -54,7 +54,8 @@ def init_clock(
 
 @dataclass
 class TraceConfig(ParamsBase):
-    segment_size: int
+    segment_bytes: int
+    smem_words: int
 
 
 @dataclass
@@ -68,18 +69,24 @@ class CutezTracer:
     @classmethod
     def create(
         cls,
-        clock_ptr,
         out_ptr,
         seg_idx: cutlass.Int32,
         cfg: TraceConfig,
     ):
+        smem = cutlass.utils.SmemAllocator()
+        clock_smem = smem.allocate_tensor(
+            element_type=cutlass.Uint64,
+            layout=cfg.smem_words,
+            byte_alignment=8,
+        )
+        clock_ptr = clock_smem.iterator
         seg_addr, out_addr, is_leader = init_clock(
             clock_ptr,
             out_ptr,
             seg_idx=seg_idx,
-            segment_size=cutlass.Int32(cfg.segment_size),
+            segment_size=cutlass.Int32(cfg.segment_bytes),
         )
-        segment_size = cutlass.Int32(cfg.segment_size)
+        segment_size = cutlass.Int32(cfg.segment_bytes)
         return cls(
             segment_size=segment_size,
             seg_addr=seg_addr,

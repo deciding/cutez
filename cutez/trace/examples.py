@@ -9,7 +9,7 @@ import cutlass.cute as cute
 import torch
 from cutlass import Int32
 
-from .core import CutezTracer, SharedStorage, TraceConfig
+from .core import CutezTracer, TraceConfig
 from .session import CutezTraceSession
 
 THREADS = 128
@@ -20,14 +20,11 @@ REGION_NAMES = {1: "outer", 2: "add"}
 
 @cute.kernel
 def sample_trace_kernel(out: cute.Tensor, iters: Int32, trace_cfg: TraceConfig):
-    smem = cutlass.utils.SmemAllocator()
-    storage = smem.allocate(SharedStorage)
-    clock_ptr = storage.clock_buf.data_ptr()
     out_ptr = out.iterator
     tidx, _, _ = cute.arch.thread_idx()
 
     wid = cute.arch.make_warp_uniform(cute.arch.warp_idx())
-    tracer = CutezTracer.create(clock_ptr, out_ptr, seg_idx=wid, cfg=trace_cfg)
+    tracer = CutezTracer.create(out_ptr, seg_idx=wid, cfg=trace_cfg)
 
     outer_scope = Int32(1)
     add_scope = Int32(2)
@@ -74,7 +71,10 @@ def run_sample_trace(trace_path: str | Path, *, iters: int = 4):
         trace_path=trace_path,
         region_names=REGION_NAMES,
     )
-    trace_cfg = TraceConfig(segment_size=SEGMENT_BYTES)
+    trace_cfg = TraceConfig(
+        segment_bytes=SEGMENT_BYTES,
+        smem_words=WARPS_PER_BLOCK * (SEGMENT_BYTES // 8),
+    )
     compiled = cute.compile(
         launch_sample_trace, session.buffer, Int32(iters), trace_cfg
     )
