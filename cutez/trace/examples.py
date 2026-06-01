@@ -25,6 +25,7 @@ def sample_trace_kernel(out: cute.Tensor, iters: Int32):
     storage = smem.allocate(SharedStorage)
     clock_ptr = storage.clock_buf.data_ptr()
     out_ptr = out.iterator
+    tidx, _, _ = cute.arch.thread_idx()
 
     wid = cute.arch.make_warp_uniform(cute.arch.warp_idx())
     seg_addr, out_addr, is_leader = init_clock(
@@ -34,15 +35,30 @@ def sample_trace_kernel(out: cute.Tensor, iters: Int32):
     outer_scope = Int32(1)
     add_scope = Int32(2)
     clock_idx = Int32(0)
+    acc = Int32(wid)
 
     clock_record(True, outer_scope, clock_idx, seg_addr, is_leader, SEGMENT_BYTES)
     clock_idx += 1
-    for _ in cutlass.range(iters):
+    for i in cutlass.range(iters):
         clock_record(True, add_scope, clock_idx, seg_addr, is_leader, SEGMENT_BYTES)
         clock_idx += 1
+
+        # Do some real integer work so the traced region is not empty.
+        step = Int32(i + wid + 1)
+        for j in cutlass.range(64):
+            delta = step + Int32(j)
+            acc = acc + delta
+            acc = acc * Int32(3)
+            acc = acc * Int32(5)
+            acc = acc + delta
+
         clock_record(False, add_scope, clock_idx, seg_addr, is_leader, SEGMENT_BYTES)
         clock_idx += 1
     clock_record(False, outer_scope, clock_idx, seg_addr, is_leader, SEGMENT_BYTES)
+
+    # Keep the arithmetic live without changing the trace structure.
+    if tidx == 0:
+        cute.printf(acc)
 
     cute.arch.sync_threads()
     finanlize_clock(seg_addr, out_addr, SEGMENT_BYTES)
@@ -84,18 +100,57 @@ def run_quack_trace(trace_path: str | Path, *, iters: int = 4):
     from quack.trace import TraceContext, TraceSession
 
     @cute.kernel
-    def sample_quack_trace_kernel(trace_ptr: Int64 | None, inner_iters: Int32):
+    def sample_quack_trace_kernel(trace_ptr: None, inner_iters: Int32):
         ctx = TraceContext.create(trace_ptr)
+        wid = cute.arch.make_warp_uniform(cute.arch.warp_idx())
+        acc = Int32(wid)
+        tidx, _, _ = cute.arch.thread_idx()
 
         ctx.b("outer")
-        for _ in cutlass.range(inner_iters):
-            ctx.b("add")
-            ctx.e("add")
+        #for i in cutlass.range(inner_iters):
+        #    ctx.b("add")
+
+        #    step = Int32(i + wid + 1)
+        #    for j in cutlass.range(64):
+        #        delta = step + Int32(j)
+        #        acc = acc + delta
+        #        acc = acc * Int32(3)
+        #        acc = acc * Int32(5)
+        #        acc = acc + delta
+
+        #    ctx.e("add")
+        ctx.b("add0")
+
+        step = Int32(wid + 1)
+        for j in cutlass.range(64):
+            delta = step + Int32(j)
+            acc = acc + delta
+            acc = acc * Int32(3)
+            acc = acc * Int32(5)
+            acc = acc + delta
+
+        ctx.e("add0")
+        ctx.b("add1")
+
+        step = Int32(wid + 2)
+        for j in cutlass.range(64):
+            delta = step + Int32(j)
+            acc = acc + delta
+            acc = acc * Int32(3)
+            acc = acc * Int32(5)
+            acc = acc + delta
+
+        ctx.e("add1")
+
         ctx.e("outer")
+
+        # Keep the arithmetic live without changing the trace structure.
+        if tidx == 0:
+            cute.printf(acc)
         ctx.flush()
 
     @cute.jit
-    def launch_quack_trace(trace_ptr: Int64 | None, inner_iters: Int32):
+    def launch_quack_trace(trace_ptr: None, inner_iters: Int32):
         sample_quack_trace_kernel(trace_ptr, inner_iters).launch(
             grid=(1, 1, 1), block=(THREADS, 1, 1)
         )
@@ -112,7 +167,7 @@ def run_quack_trace(trace_path: str | Path, *, iters: int = 4):
 
 
 if __name__ == "__main__":
-    cutez_res = run_sample_trace("trace_cutez.json", iters=4)
-    print(cutez_res["trace_path"])
-    #quack_res = run_quack_trace("trace_quack.json", iters=2)
-    #print(quack_res["trace_path"])
+    # cutez_res = run_sample_trace("trace_cutez.json", iters=2)
+    # print(cutez_res["trace_path"])
+    quack_res = run_quack_trace("trace_quack.json", iters=2)
+    print(quack_res["trace_path"])
