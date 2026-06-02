@@ -51,13 +51,20 @@ def debug_smem_usage(smem_capacity_bytes: cutlass.Int32):
     """
     tidx, _, _ = cute.arch.thread_idx()
     dyn = cute.arch.get_dyn_smem_size()
+    bdx, bdy, bdz = cute.arch.block_dim()
+    gdx, gdy, gdz = cute.arch.grid_dim()
     zero = cutlass.Int32(0)
     base_align = cutlass.Int32(1024)
     if tidx == zero:
+        num_warps = bdx * bdy * bdz // 32
+        grid_total = gdx * gdy * gdz
         available = smem_capacity_bytes - base_align - dyn
         cute.printf("dyn_smem_bytes=%d", dyn)
         cute.printf("capacity_bytes=%d", smem_capacity_bytes)
         cute.printf("available_bytes=%d", available)
+        cute.printf("threads=%d", bdx * bdy * bdz)
+        cute.printf("warps=%d", num_warps)
+        cute.printf("grid=%dx%dx%d=%d", gdx, gdy, gdz, grid_total)
 
 
 def get_smem_cap(compute_capability: str | None = None) -> int:

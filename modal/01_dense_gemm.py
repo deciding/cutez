@@ -15,7 +15,8 @@ RUN_TESTS = [
     # "dense_gemm_5",
     # "dense_gemm_6",
     # "dense_gemm_7",
-    "dense_gemm_7min",
+    # "dense_gemm_7min",
+    "dense_gemm_8_tracer",
     # "persistent",
     # "prefetch",
     # "software_pipeline",
@@ -57,8 +58,8 @@ cutlass_image = (
 
 cutlass_image = (
     cutlass_image.pip_install("torch", "pytest")
+    .pip_install("quack")
     .pip_install("nvidia-cutlass-dsl>=4.4.1")
-
     # cutez 1: local dir
     .add_local_dir(
         root_dir.parent / "cutez",
@@ -66,15 +67,14 @@ cutlass_image = (
         copy=True,
     )
     ## cutez 2: local build
-    #.add_local_dir(
+    # .add_local_dir(
     #    root_dir.parent / "dist",
     #    remote_path="/workspace/dist",
     #    copy=True,
-    #)
-    #.run_commands("python -m pip install /workspace/dist/cutez-0.1.1-py3-none-any.whl")
+    # )
+    # .run_commands("python -m pip install /workspace/dist/cutez-0.1.1-py3-none-any.whl")
     ## cutez 3: pypi
-    #.pip_install("cutez==0.1.0")
-
+    # .pip_install("cutez==0.1.0")
     .pip_install("triton==3.5.1")
     .pip_install("teraxlang==3.5.1.dev4")
     .add_local_dir(
@@ -549,6 +549,25 @@ def run_dense_gemm():
 
         print(f"\nHTML viewers generated!")
         print(f"to download and view: modal volume get {VOLUME_NAME} {dump_name}")
+
+    # 16. dense_gemm_8_tracer.py (trace test)
+    if "dense_gemm_8_tracer" in RUN_TESTS:
+        print("\n=== 16. dense_gemm_8_tracer.py Trace Test ===")
+        from cuteDSL.blackwell.dense_gemm_8_tracer import (
+            run_dense_gemm,
+        )
+
+        run_dense_gemm(
+            (M, N, K),
+            tolerance=0.1,
+            warmup_iterations=1,
+            iterations=1,
+            skip_ref_check=False,
+            init_mode=INIT_MODE,
+            normal_mean=NORMAL_MEAN,
+            normal_std=NORMAL_STD,
+            trace_path=os.path.join(DUMP_DIR, "trace_dense_gemm_8.json"),
+        )
 
     print(f"\nDone! Results saved to: {DUMP_DIR}")
 
