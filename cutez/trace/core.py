@@ -14,7 +14,7 @@ from cutlass import Constexpr, const_expr
 from cutlass._mlir import ir
 from cutlass._mlir.dialects import llvm
 from cutlass.cute.core import const
-from quack.cute_dsl_utils import ParamsBase
+from cutez._params_base import ParamsBase
 
 if not hasattr(cutlass, "int32"):
     cutlass.int32 = cutlass.Int32
