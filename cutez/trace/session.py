@@ -32,13 +32,14 @@ from .core import get_region_names
 @dataclass
 class CutezTraceSession:
     sm_smem_available_bytes: int
-    blocks_per_sm: int
     total_blocks: int
     warps_per_block: int
     trace_path: str | Path
+    blocks_per_sm: int = 1
     region_names: dict[int, str] | None = None
     device: str | torch.device = "cuda"
     sm_clock_khz: int | None = None
+    dummy: bool = False
 
     def __post_init__(self):
         self.block_smem_bytes = self.sm_smem_available_bytes // self.blocks_per_sm
@@ -54,14 +55,20 @@ class CutezTraceSession:
             block_smem_bytes=self.block_smem_bytes,
             segment_bytes=self.segment_bytes,
             smem_words=self.block_smem_words,
+            dummy=self.dummy,
         )
-        self.buffer_tensor = torch.zeros(
-            self.buffer_numel, dtype=torch.int64, device=self.device
-        )
-        self.buffer = from_dlpack(self.buffer_tensor, assumed_align=8)
+        if self.dummy:
+            self.buffer_tensor = None
+            self.buffer = None
+        else:
+            self.buffer_tensor = torch.zeros(
+                self.buffer_numel, dtype=torch.int64, device=self.device
+            )
+            self.buffer = from_dlpack(self.buffer_tensor, assumed_align=8)
 
     def reset_buffer(self):
-        self.buffer_tensor.zero_()
+        if self.buffer_tensor is not None:
+            self.buffer_tensor.zero_()
 
     def resolve_sm_clock_khz(self) -> int:
         if self.sm_clock_khz is not None:
@@ -104,6 +111,8 @@ class CutezTraceSession:
         nonzero events chronologically by reconstructed clock value.
         """
         if words is None:
+            if self.buffer_tensor is None:
+                return {}
             words = self.buffer_tensor
         if words.dtype != torch.int64:
             raise TypeError(
@@ -135,6 +144,8 @@ class CutezTraceSession:
         begin/end events, converts `%clock` ticks to approximate nanoseconds
         using the device SM clock rate, and returns the written path.
         """
+        if self.buffer_tensor is None:
+            return self.trace_path
         decoded = self.decode_buffer(self.buffer_tensor)
         paired = []
         region_names = (

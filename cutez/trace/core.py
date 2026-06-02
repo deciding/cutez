@@ -10,9 +10,10 @@ from dataclasses import dataclass
 
 import cutlass
 import cutlass.cute as cute
-from cutlass import const_expr
+from cutlass import Constexpr, const_expr
 from cutlass._mlir import ir
 from cutlass._mlir.dialects import llvm
+from cutlass.cute.core import const
 from quack.cute_dsl_utils import ParamsBase
 
 if not hasattr(cutlass, "int32"):
@@ -125,6 +126,7 @@ class TraceConfig(ParamsBase):
     block_smem_bytes: int
     segment_bytes: int
     smem_words: int
+    dummy: bool = False
 
 
 @dataclass
@@ -134,14 +136,18 @@ class CutezTracer:
     out_addr: object = None
     is_leader: object = None
     clock_idx: cutlass.Int32 = None
+    dummy: Constexpr = const_expr(False)
 
     @classmethod
     def create(
         cls,
-        out_ptr,
+        out,
         seg_idx: cutlass.Int32,
         cfg: TraceConfig,
     ):
+        if cfg.dummy:
+            return cls(dummy=const_expr(True))
+
         smem = cutlass.utils.SmemAllocator()
         clock_smem = smem.allocate_tensor(
             element_type=cutlass.Uint64,
@@ -151,7 +157,7 @@ class CutezTracer:
         clock_ptr = clock_smem.iterator
         seg_addr, out_addr, is_leader = init_clock(
             clock_ptr,
-            out_ptr,
+            out.iterator,
             seg_idx=seg_idx,
             segment_size=cutlass.Int32(cfg.segment_bytes),
             block_smem_bytes=cutlass.Int32(cfg.block_smem_bytes),
@@ -166,6 +172,8 @@ class CutezTracer:
         )
 
     def _record(self, is_start: bool, scope_id):
+        if const_expr(self.dummy):
+            return
         if isinstance(scope_id, str):
             scope_id = _intern_region(scope_id)
         is_leader = self.is_leader.ir_value()
@@ -186,6 +194,8 @@ class CutezTracer:
         self._record(False, scope_id)
 
     def flush(self):
+        if const_expr(self.dummy):
+            return
         finanlize_clock(
             self.seg_addr,
             self.out_addr,

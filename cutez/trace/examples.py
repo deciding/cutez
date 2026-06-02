@@ -21,11 +21,10 @@ SM_SMEM_AVAILABLE_BYTES = 100352
 
 @cute.kernel
 def sample_trace_kernel(out: cute.Tensor, iters: Int32, trace_cfg: TraceConfig):
-    out_ptr = out.iterator
     tidx, _, _ = cute.arch.thread_idx()
 
     wid = cute.arch.make_warp_uniform(cute.arch.warp_idx())
-    tracer = CutezTracer.create(out_ptr, seg_idx=wid, cfg=trace_cfg)
+    tracer = CutezTracer.create(out, seg_idx=wid, cfg=trace_cfg)
 
     acc = Int32(wid)
 
@@ -48,7 +47,7 @@ def sample_trace_kernel(out: cute.Tensor, iters: Int32, trace_cfg: TraceConfig):
     # Keep the arithmetic live without changing the trace structure.
     if tidx == 0:
         cute.printf(acc)
-        #debug_smem_usage(101376)
+        # debug_smem_usage(101376)
 
     cute.arch.sync_threads()
     tracer.flush()
@@ -66,10 +65,10 @@ def run_sample_trace(trace_path: str | Path, *, iters: int = 4):
 
     session = CutezTraceSession(
         sm_smem_available_bytes=SM_SMEM_AVAILABLE_BYTES,
-        blocks_per_sm=BLOCKS_PER_SM,
         total_blocks=TOTAL_BLOCKS,
         warps_per_block=WARPS_PER_BLOCK,
         trace_path=trace_path,
+        dummy=False,
     )
     get_smem_cap()
     compiled = cute.compile(
