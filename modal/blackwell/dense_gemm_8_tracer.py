@@ -70,7 +70,7 @@ AUTOTUNE_CONFIGS = [
             "ab_stages": ab_stages,
         }
     )
-    #for ab_stages in (6, 7, 8)
+    # for ab_stages in (6, 7, 8)
     for ab_stages in (6,)
 ]
 
@@ -364,9 +364,10 @@ def kernel(
     work_tile = tile_sched.initial_work_tile_info()
     num_k_tiles = cute.size(gA, mode=[3])
 
-    tracer = CutezTracer.create(trace_out, seg_idx=warp_idx, cfg=trace_cfg)
-    if tidx == 0 and bidx == 0 and bidy == 0 and bidz == 0:
-        debug_smem_usage(232448)
+    tracer = CutezTracer.create(trace_out, seg_idx=warp_idx, smem=smem, cfg=trace_cfg)
+    #if tidx == 0 and bidx == 0 and bidy == 0 and bidz == 0:
+    #    smem_cap = cutlass.Int32(232448)
+    #    debug_smem_usage(smem_cap)
 
     if warp_idx == tma_warp_id:
         tracer.enter_scope("load")
@@ -412,7 +413,7 @@ def kernel(
         tracer.flush()
 
     if warp_idx == mma_warp_id:
-        tracer.enter_scope("mma")
+        #tracer.enter_scope("mma")
         while work_tile.is_valid_tile:
             cur_tile_coord = work_tile.tile_idx
             mma_coord_mnk = (
@@ -459,11 +460,11 @@ def kernel(
             work_tile = tile_sched.get_current_work()
 
         acc_pipeline.producer_tail(acc_producer_state)
-        tracer.exit_scope("mma")
-        tracer.flush()
+        #tracer.exit_scope("mma")
+        #tracer.flush()
 
     if warp_idx in epilogue_warp_id:
-        tracer.enter_scope("epilogue")
+        #tracer.enter_scope("epilogue")
         epilog_sync_barrier = pipeline.NamedBarrier(
             barrier_id=epilog_sync_bar_id,
             num_threads=32 * len(epilogue_warp_id),
@@ -523,19 +524,19 @@ def kernel(
             work_tile = tile_sched.get_current_work()
 
         c_pipeline.producer_tail()  # cp.async.bulk.wait_group.read 0
-        tracer.exit_scope("epilogue")
-        tracer.flush()
+        #tracer.exit_scope("epilogue")
+        #tracer.flush()
 
     tmem.relinquish_alloc_permit()
     tmem.free(tmem_ptr)
 
 
 # tiled_mma, c_layout/epi_tile, smem_layouts, tma_atoms/tma_tensors, cluster/tile_scheduler/grid
-@cutez.autotune(
-    configs=AUTOTUNE_CONFIGS,
-    key=["m", "n", "k"],
-    cache_path="/workspace/dump/dense_gemm_8_trace.json",
-)
+#@cutez.autotune(
+#    configs=AUTOTUNE_CONFIGS,
+#    key=["m", "n", "k"],
+#    cache_path="/workspace/dump/dense_gemm_8_trace.json",
+#)
 @cute.jit
 def host_function(
     a: cute.Tensor,
@@ -650,8 +651,6 @@ def host_function(
     grid_shape = utils.StaticPersistentTileScheduler.get_grid_shape(
         tile_sched_params, max_active_clusters
     )
-
-    print(f"7MIN tested")
 
     print(f"cluster_layout_vmnk shape: {cluster_layout_vmnk.shape}")
     print(f"num_mcast_ctas_a: {num_mcast_ctas_a}, num_mcast_ctas_b: {num_mcast_ctas_b}")
@@ -785,7 +784,7 @@ def run_dense_gemm(
             total_blocks=148,
             warps_per_block=6,
             trace_path=trace_path,
-            dummy=False
+            dummy=False,
         )
         trace_out = trace_session.buffer
         trace_cfg = trace_session.trace_config
@@ -833,6 +832,7 @@ def run_dense_gemm(
         current_stream,
         trace_out,
         trace_cfg,
+        (256, 256), (2, 1), 6,
         verbose=True,
     )
 
@@ -859,8 +859,14 @@ def run_dense_gemm(
         )
 
     if not skip_ref_check:
-        compiled_gemm(a_tensor, b_tensor, c_tensor, current_stream, trace_out, trace_cfg)
+        compiled_gemm(
+            a_tensor, b_tensor, c_tensor, current_stream, trace_out, trace_cfg
+        )
         compare(a_torch_cpu, b_torch_cpu, c_torch_gpu, c_dtype, tolerance)
+
+    if trace_session is not None:
+        trace_session.write_trace_json()
+        print(f"Trace written to: {trace_session.trace_path}")
 
     # stop benchmarking
     return 1000
@@ -874,9 +880,5 @@ def run_dense_gemm(
         warmup_iterations=warmup_iterations,
         iterations=iterations,
     )
-
-    if trace_session is not None:
-        trace_session.write_trace_json()
-        print(f"Trace written to: {trace_session.trace_path}")
 
     return exec_time

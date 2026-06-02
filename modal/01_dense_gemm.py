@@ -60,12 +60,6 @@ cutlass_image = (
     cutlass_image.pip_install("torch", "pytest")
     .pip_install("quack")
     .pip_install("nvidia-cutlass-dsl>=4.4.1")
-    # cutez 1: local dir
-    .add_local_dir(
-        root_dir.parent / "cutez",
-        remote_path="/workspace/cutez",
-        copy=True,
-    )
     ## cutez 2: local build
     # .add_local_dir(
     #    root_dir.parent / "dist",
@@ -81,6 +75,12 @@ cutlass_image = (
         root_dir / "blackwell",
         remote_path="/workspace/cuteDSL/blackwell",
         ignore="cutlass",
+    )
+    # cutez 1: local dir
+    .add_local_dir(
+        root_dir.parent / "cutez",
+        remote_path="/workspace/cutez",
+        #copy=True,
     )
 )
 

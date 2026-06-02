@@ -150,12 +150,13 @@ class CutezTracer:
         cls,
         out,
         seg_idx: cutlass.Int32,
+        smem,
         cfg: TraceConfig,
     ):
         if cfg.dummy:
             return cls(dummy=const_expr(True))
 
-        smem = cutlass.utils.SmemAllocator()
+        #smem = cutlass.utils.SmemAllocator()
         clock_smem = smem.allocate_tensor(
             element_type=cutlass.Uint64,
             layout=cfg.smem_words,
