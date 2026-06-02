@@ -9,14 +9,14 @@ import cutlass.cute as cute
 import torch
 from cutlass import Int32
 
-from .core import CutezTracer, TraceConfig
+from .core import CutezTracer, TraceConfig, debug_smem_usage, get_smem_cap
 from .session import CutezTraceSession
 
 THREADS = 128
 WARPS_PER_BLOCK = THREADS // 32
 BLOCKS_PER_SM = 1
 TOTAL_BLOCKS = 16
-SM_SMEM_AVAILABLE_BYTES = 512
+SM_SMEM_AVAILABLE_BYTES = 100352
 
 
 @cute.kernel
@@ -48,7 +48,7 @@ def sample_trace_kernel(out: cute.Tensor, iters: Int32, trace_cfg: TraceConfig):
     # Keep the arithmetic live without changing the trace structure.
     if tidx == 0:
         cute.printf(acc)
-        cute.printf(cute.arch.get_dyn_smem_size())
+        #debug_smem_usage(101376)
 
     cute.arch.sync_threads()
     tracer.flush()
@@ -71,12 +71,12 @@ def run_sample_trace(trace_path: str | Path, *, iters: int = 4):
         warps_per_block=WARPS_PER_BLOCK,
         trace_path=trace_path,
     )
+    get_smem_cap()
     compiled = cute.compile(
         launch_sample_trace, session.buffer, Int32(iters), session.trace_config
     )
     compiled(session.buffer, Int32(iters), session.trace_config)
     torch.cuda.synchronize()
-    print(cutlass.utils.get_smem_capacity_in_bytes(compute_capability="sm_90"))
 
     # Uncomment for raw per-block/warp clock diagnostics before JSON normalization.
     # print(session.debug_dump_segments())

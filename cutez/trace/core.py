@@ -40,6 +40,39 @@ def get_region_names() -> dict[int, str]:
 
 
 @cute.jit
+def debug_smem_usage(smem_capacity_bytes: cutlass.Int32):
+    """Print dynamic SMEM size and architectural SMEM capacity from device code.
+
+    This is a standalone debug helper — it does not affect trace behavior.
+    Call it from a kernel to inspect SMEM usage (only thread 0 prints).
+    The caller is responsible for getting *smem_capacity_bytes* from the
+    host-side ``get_smem_cap()`` helper and threading it through to device code.
+    """
+    tidx, _, _ = cute.arch.thread_idx()
+    dyn = cute.arch.get_dyn_smem_size()
+    zero = cutlass.Int32(0)
+    base_align = cutlass.Int32(1024)
+    if tidx == zero:
+        available = smem_capacity_bytes - base_align - dyn
+        cute.printf("dyn_smem_bytes=%d", dyn)
+        cute.printf("capacity_bytes=%d", smem_capacity_bytes)
+        cute.printf("available_bytes=%d", available)
+
+
+def get_smem_cap(compute_capability: str | None = None) -> int:
+    """Get (and print) the SMEM capacity in bytes for the given compute capability.
+
+    When *compute_capability* is ``None``, the current device arch is auto-detected.
+    Use the returned value to call ``debug_smem_usage(smem_cap)`` from device code.
+    """
+    cap = cutlass.utils.get_smem_capacity_in_bytes(
+        compute_capability=compute_capability
+    )
+    print(f"SMEM capacity ({compute_capability or 'auto'}): {cap} bytes")
+    return cap
+
+
+@cute.jit
 def init_clock(
     clock_ptr,
     out_ptr,
