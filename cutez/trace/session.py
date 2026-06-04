@@ -146,6 +146,10 @@ class CutezTraceSession:
         """
         if self.buffer_tensor is None:
             return self.trace_path
+        #print(self.buffer_tensor.shape)
+        #print(torch.nonzero(self.buffer_tensor)[:64])
+        #print(torch.nonzero(self.buffer_tensor).shape)
+        #print(self.buffer_tensor[torch.nonzero(self.buffer_tensor)][:64])
         decoded = self.decode_buffer(self.buffer_tensor)
         paired = []
         region_names = (

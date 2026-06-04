@@ -152,17 +152,18 @@ class CutezTracer:
         seg_idx: cutlass.Int32,
         smem,
         cfg: TraceConfig,
+        clock_ptr=None,
     ):
         if cfg.dummy:
             return cls(dummy=const_expr(True))
 
-        #smem = cutlass.utils.SmemAllocator()
-        clock_smem = smem.allocate_tensor(
-            element_type=cutlass.Uint64,
-            layout=cfg.smem_words,
-            byte_alignment=8,
-        )
-        clock_ptr = clock_smem.iterator
+        if clock_ptr is None:
+            clock_smem = smem.allocate_tensor(
+                element_type=cutlass.Uint64,
+                layout=cfg.smem_words,
+                byte_alignment=8,
+            )
+            clock_ptr = clock_smem.iterator
         seg_addr, out_addr, is_leader = init_clock(
             clock_ptr,
             out.iterator,
@@ -208,6 +209,7 @@ class CutezTracer:
             self.seg_addr,
             self.out_addr,
             self.segment_size,
+            self.clock_idx,
         )
 
 
@@ -256,6 +258,13 @@ def clock_record(
         is_align_stack=False,
         asm_dialect=llvm.AsmDialect.AD_ATT,
     )
+    #tidx, _, _ = cute.arch.thread_idx()
+    #bidx, bidy, bidz = cute.arch.block_idx()
+    #gdx, gdy, _ = cute.arch.grid_dim()
+    #block_linear = bidx + gdx*bidy + gdx*gdy*bidz
+    #if tidx == 160:
+    #    cute.printf("{} clock_hi: {}", block_linear, clock_hi)
+    #    cute.printf("{} clock_lo: {}", block_linear, clock_lo)
     clock_hi = llvm.AndOp(clock_hi, mask).result
     clock_hi = llvm.OrOp(clock_hi, scope_id).result
 
@@ -275,9 +284,11 @@ def finanlize_clock(
     seg_addr,
     out_addr,
     segment_size: cutlass.Int32,
+    num_events: cutlass.Int32,
 ):
-    """Flush one SMEM trace segment to its matching GMEM segment."""
+    """Flush recorded trace entries from SMEM segment to its matching GMEM segment."""
     segment_size = cutlass.Int32(segment_size)
+    num_events = cutlass.Int32(num_events)
 
     i32 = ir.IntegerType.get_signless(32)
     i64 = ir.IntegerType.get_signless(64)
@@ -290,9 +301,8 @@ def finanlize_clock(
 
     byte_off = zero
     byte_off_i64 = zero_i64
-    clock_cnt = llvm.UDivOp(segment_size, entry_size).result
 
-    for _ in cutlass.range(clock_cnt):
+    for _ in cutlass.range(num_events):
         smem_addr0 = llvm.AddOp(seg_addr, byte_off, 0).result
 
         loaded0 = llvm.inline_asm(

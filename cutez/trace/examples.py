@@ -24,7 +24,8 @@ def sample_trace_kernel(out: cute.Tensor, iters: Int32, trace_cfg: TraceConfig):
     tidx, _, _ = cute.arch.thread_idx()
 
     wid = cute.arch.make_warp_uniform(cute.arch.warp_idx())
-    tracer = CutezTracer.create(out, seg_idx=wid, cfg=trace_cfg)
+    smem = cutlass.utils.SmemAllocator()
+    tracer = CutezTracer.create(out, smem=smem, seg_idx=wid, cfg=trace_cfg)
 
     acc = Int32(wid)
 
