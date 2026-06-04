@@ -290,6 +290,8 @@ def finanlize_clock(
     segment_size = cutlass.Int32(segment_size)
     num_events = cutlass.Int32(num_events)
 
+    num_events = cutlass.min(segment_size // 8, num_events)
+
     i32 = ir.IntegerType.get_signless(32)
     i64 = ir.IntegerType.get_signless(64)
     four = llvm.ConstantOp(i32, ir.IntegerAttr.get(i32, 4)).result

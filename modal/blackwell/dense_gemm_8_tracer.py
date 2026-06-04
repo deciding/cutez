@@ -386,9 +386,11 @@ def kernel(
 
             ab_producer_state.reset_count()
 
+            #tracer.enter_scope("load_inner")
             for k_tile in cutlass.range(
                 num_k_tiles, unroll=1
             ):  # no unrolling by default
+                tracer.enter_scope("load_inner")
                 ab_pipeline.producer_acquire(ab_producer_state)
                 cute.copy(
                     tma_atom_a,
@@ -405,6 +407,8 @@ def kernel(
                     mcast_mask=b_full_mcast_mask,
                 )
                 ab_producer_state.advance()
+                tracer.exit_scope("load_inner")
+            #tracer.exit_scope("load_inner")
             tile_sched.advance_to_next_work()
             work_tile = tile_sched.get_current_work()
 
@@ -430,6 +434,7 @@ def kernel(
             tiled_mma.set(tcgen05.Field.ACCUMULATE, False)
 
             for k_tile_idx in cutlass.range(num_k_tiles):  # num of mma instrs
+                tracer.enter_scope("mma_inner")
                 if is_leader_cta:
                     ab_pipeline.consumer_wait(ab_consumer_state)
                     num_k_blocks = cute.size(tCrA, mode=[2])
@@ -451,6 +456,7 @@ def kernel(
 
                     ab_pipeline.consumer_release(ab_consumer_state)
                     ab_consumer_state.advance()
+                tracer.exit_scope("mma_inner")
 
             if is_leader_cta:
                 acc_pipeline.producer_commit(acc_producer_state)
@@ -487,6 +493,7 @@ def kernel(
             # (T2R, T2R_M, T2R_N, (EPI_M, EPI_N))
             subtile_cnt = cute.size(tTR_tAcc.shape, mode=[3])
             for subtile_idx in cutlass.range(subtile_cnt):
+                tracer.enter_scope("epilogue_inner")
                 tTR_tAcc_mn = tTR_tAcc[(None, None, None, subtile_idx)]
                 cute.copy(tmem_tiled_copy, tTR_tAcc_mn, tTR_rAcc)
 
@@ -515,6 +522,7 @@ def kernel(
                 epilog_sync_barrier.arrive_and_wait()
 
                 epi_state.advance()
+                tracer.exit_scope("epilogue_inner")
 
             with cute.arch.elect_one():
                 acc_pipeline.consumer_release(acc_consumer_state)
