@@ -137,25 +137,27 @@ class CutezTraceSession:
                 )
         return out
 
-    def write_trace_json(self) -> Path:
+    def write_trace_json(self, max_blocks: int | None = None) -> Path:
         """Decode a trace buffer and write a Chrome trace JSON file.
 
         This method decodes the session-owned flat buffer, pairs
         begin/end events, converts `%clock` ticks to approximate nanoseconds
         using the device SM clock rate, and returns the written path.
+
+        When *max_blocks* is provided, only blocks 0 .. max_blocks-1 are
+        included in the output. The starting timestamp is normalized to
+        the minimum among the selected blocks.
         """
         if self.buffer_tensor is None:
             return self.trace_path
-        #print(self.buffer_tensor.shape)
-        #print(torch.nonzero(self.buffer_tensor)[:64])
-        #print(torch.nonzero(self.buffer_tensor).shape)
-        #print(self.buffer_tensor[torch.nonzero(self.buffer_tensor)][:64])
         decoded = self.decode_buffer(self.buffer_tensor)
-        paired = []
         region_names = (
             self.region_names if self.region_names is not None else get_region_names()
         )
-        for events in decoded.values():
+        paired = []
+        for (block, warp), events in decoded.items():
+            if max_blocks is not None and block >= max_blocks:
+                continue
             paired.extend(pair_complete_events(events, region_names=region_names))
         sm_clock_khz = self.resolve_sm_clock_khz()
         payload = trace_json_payload(
