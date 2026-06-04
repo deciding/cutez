@@ -413,7 +413,7 @@ def kernel(
         tracer.flush()
 
     if warp_idx == mma_warp_id:
-        #tracer.enter_scope("mma")
+        tracer.enter_scope("mma")
         while work_tile.is_valid_tile:
             cur_tile_coord = work_tile.tile_idx
             mma_coord_mnk = (
@@ -460,11 +460,11 @@ def kernel(
             work_tile = tile_sched.get_current_work()
 
         acc_pipeline.producer_tail(acc_producer_state)
-        #tracer.exit_scope("mma")
-        #tracer.flush()
+        tracer.exit_scope("mma")
+        tracer.flush()
 
     if warp_idx in epilogue_warp_id:
-        #tracer.enter_scope("epilogue")
+        tracer.enter_scope("epilogue")
         epilog_sync_barrier = pipeline.NamedBarrier(
             barrier_id=epilog_sync_bar_id,
             num_threads=32 * len(epilogue_warp_id),
@@ -524,8 +524,8 @@ def kernel(
             work_tile = tile_sched.get_current_work()
 
         c_pipeline.producer_tail()  # cp.async.bulk.wait_group.read 0
-        #tracer.exit_scope("epilogue")
-        #tracer.flush()
+        tracer.exit_scope("epilogue")
+        tracer.flush()
 
     tmem.relinquish_alloc_permit()
     tmem.free(tmem_ptr)
@@ -834,6 +834,8 @@ def run_dense_gemm(
         trace_cfg,
         (256, 256), (2, 1), 6,
         verbose=True,
+        #options="--opt-level 0"
+        #options="--ptxas-options '--opt-level=0'"
     )
 
     def compare(a_torch_cpu, b_torch_cpu, c_torch_gpu, c_dtype, tolerance):
@@ -865,7 +867,7 @@ def run_dense_gemm(
         compare(a_torch_cpu, b_torch_cpu, c_torch_gpu, c_dtype, tolerance)
 
     if trace_session is not None:
-        trace_session.write_trace_json()
+        trace_session.write_trace_json(max_blocks=2)
         print(f"Trace written to: {trace_session.trace_path}")
 
     # stop benchmarking
