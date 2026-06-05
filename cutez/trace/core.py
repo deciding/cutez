@@ -87,11 +87,13 @@ def init_clock(
     seg_idx: cutlass.Int32,
     segment_size: cutlass.Int32,
     block_smem_bytes: cutlass.Int32,
+    total_blocks: cutlass.Int32,
 ):
     """Compute SMEM and GMEM segment pointers for one warp-owned trace segment."""
     seg_idx = cutlass.Int32(seg_idx)
     segment_size = cutlass.Int32(segment_size)
     block_smem_bytes = cutlass.Int32(block_smem_bytes)
+    total_blocks = cutlass.Int32(total_blocks)
     smem_base_llvm = clock_ptr.llvm_ptr
     i32 = ir.IntegerType.get_signless(32)
     i64 = ir.IntegerType.get_signless(64)
@@ -125,7 +127,11 @@ def init_clock(
     tidx_in_warp = llvm.URemOp(tidx, wthreads).result
     is_leader_thread = llvm.ICmpOp(llvm.ICmpPredicate.eq, tidx_in_warp, zero).result
 
-    return seg_addr, out_addr, is_leader_thread
+    recording_block = llvm.ICmpOp(
+        llvm.ICmpPredicate.ult, linear_block, total_blocks
+    ).result
+
+    return seg_addr, out_addr, is_leader_thread, recording_block
 
 
 @dataclass
@@ -135,6 +141,7 @@ class TraceConfig(ParamsBase):
     smem_words: int
     dummy: bool = False
     smem_capacity_bytes: int = 0
+    total_blocks: int = 2
 
 
 @dataclass
@@ -143,6 +150,7 @@ class CutezTracer:
     seg_addr: object = None
     out_addr: object = None
     is_leader: object = None
+    recording_block: object = None
     clock_idx: cutlass.Int32 = None
     dummy: Constexpr = const_expr(False)
 
@@ -165,12 +173,13 @@ class CutezTracer:
                 byte_alignment=8,
             )
             clock_ptr = clock_smem.iterator
-        seg_addr, out_addr, is_leader = init_clock(
+        seg_addr, out_addr, is_leader, recording_block = init_clock(
             clock_ptr,
             out.iterator,
             seg_idx=seg_idx,
             segment_size=cutlass.Int32(cfg.segment_bytes),
             block_smem_bytes=cutlass.Int32(cfg.block_smem_bytes),
+            total_blocks=cutlass.Int32(cfg.total_blocks),
         )
         segment_size = cutlass.Int32(cfg.segment_bytes)
         return cls(
@@ -178,6 +187,7 @@ class CutezTracer:
             seg_addr=seg_addr,
             out_addr=out_addr,
             is_leader=is_leader,
+            recording_block=recording_block,
             clock_idx=cutlass.Int32(0),
         )
 
@@ -206,11 +216,13 @@ class CutezTracer:
     def flush(self):
         if const_expr(self.dummy):
             return
+        recording_block = self.recording_block.ir_value()
         finanlize_clock(
             self.seg_addr,
             self.out_addr,
             self.segment_size,
             self.clock_idx,
+            recording_block,
         )
 
 
@@ -286,6 +298,7 @@ def finanlize_clock(
     out_addr,
     segment_size: cutlass.Int32,
     num_events: cutlass.Int32,
+    recording_block,
 ):
     """Flush recorded trace entries from SMEM segment to its matching GMEM segment."""
     segment_size = cutlass.Int32(segment_size)
@@ -310,9 +323,9 @@ def finanlize_clock(
 
         loaded0 = llvm.inline_asm(
             i64,
-            [smem_addr0],
-            asm_string="ld.shared.b32 $0, [$1];",
-            constraints="=l,r",
+            [smem_addr0, recording_block],
+            asm_string="@$2 ld.shared.b32 $0, [$1];",
+            constraints="=l,r,b",
             has_side_effects=True,
             is_align_stack=False,
             asm_dialect=llvm.AsmDialect.AD_ATT,
@@ -321,9 +334,9 @@ def finanlize_clock(
         gmem_addr0 = llvm.AddOp(out_addr, byte_off_i64, 0).result
         llvm.inline_asm(
             None,
-            [gmem_addr0, loaded0],
-            asm_string="st.global.b32 [$0], $1;",
-            constraints="l,l",
+            [gmem_addr0, loaded0, recording_block],
+            asm_string="@$2 st.global.b32 [$0], $1;",
+            constraints="l,l,b",
             has_side_effects=True,
             is_align_stack=False,
             asm_dialect=llvm.AsmDialect.AD_ATT,
@@ -332,9 +345,9 @@ def finanlize_clock(
         smem_addr1 = llvm.AddOp(smem_addr0, four, 0).result
         loaded1 = llvm.inline_asm(
             i64,
-            [smem_addr1],
-            asm_string="ld.shared.b32 $0, [$1];",
-            constraints="=l,r",
+            [smem_addr1, recording_block],
+            asm_string="@$2 ld.shared.b32 $0, [$1];",
+            constraints="=l,r,b",
             has_side_effects=True,
             is_align_stack=False,
             asm_dialect=llvm.AsmDialect.AD_ATT,
@@ -343,9 +356,9 @@ def finanlize_clock(
         gmem_addr1 = llvm.AddOp(gmem_addr0, four_i64, 0).result
         llvm.inline_asm(
             None,
-            [gmem_addr1, loaded1],
-            asm_string="st.global.b32 [$0], $1;",
-            constraints="l,l",
+            [gmem_addr1, loaded1, recording_block],
+            asm_string="@$2 st.global.b32 [$0], $1;",
+            constraints="l,l,b",
             has_side_effects=True,
             is_align_stack=False,
             asm_dialect=llvm.AsmDialect.AD_ATT,

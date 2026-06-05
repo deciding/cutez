@@ -776,7 +776,7 @@ def run_dense_gemm(
     if trace_path is not None:
         trace_session = CutezTraceSession(
             sm_smem_available_bytes=1920,
-            total_blocks=148,
+            #total_blocks=148,
             warps_per_block=6,
             trace_path=trace_path,
             dummy=False,
@@ -864,7 +864,7 @@ def run_dense_gemm(
         compare(a_torch_cpu, b_torch_cpu, c_torch_gpu, c_dtype, tolerance)
 
     if trace_session is not None:
-        trace_session.write_trace_json(max_blocks=2)
+        trace_session.write_trace_json()
         print(f"Trace written to: {trace_session.trace_path}")
 
     # stop benchmarking

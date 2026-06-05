@@ -32,9 +32,9 @@ from .core import get_region_names
 @dataclass
 class CutezTraceSession:
     sm_smem_available_bytes: int
-    total_blocks: int
     warps_per_block: int
     trace_path: str | Path
+    total_blocks: int = 2
     blocks_per_sm: int = 1
     region_names: dict[int, str] | None = None
     device: str | torch.device = "cuda"
@@ -58,6 +58,7 @@ class CutezTraceSession:
             smem_words=self.block_smem_words,
             dummy=self.dummy,
             smem_capacity_bytes=smem_cap,
+            total_blocks=self.total_blocks,
         )
         if self.dummy:
             self.buffer_tensor = None
