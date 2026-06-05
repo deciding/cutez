@@ -365,8 +365,6 @@ def kernel(
     num_k_tiles = cute.size(gA, mode=[3])
 
     tracer = CutezTracer.create(trace_out, seg_idx=warp_idx, smem=smem, cfg=trace_cfg)
-    # if tidx == 0 and bidx == 0 and bidy == 0 and bidz == 0:
-    #    debug_smem_usage(trace_cfg.smem_capacity_bytes)
 
     if warp_idx == tma_warp_id:
         tracer.enter_scope("load")
@@ -779,7 +777,8 @@ def run_dense_gemm(
             #total_blocks=148,
             warps_per_block=6,
             trace_path=trace_path,
-            dummy=False,
+            #enabled=True,
+            #verbose=False
         )
         trace_out = trace_session.buffer
         trace_cfg = trace_session.trace_config

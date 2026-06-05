@@ -31,17 +31,20 @@ from .core import get_region_names
 
 @dataclass
 class CutezTraceSession:
-    sm_smem_available_bytes: int
     warps_per_block: int
     trace_path: str | Path
+    sm_smem_available_bytes: int
     total_blocks: int = 2
     blocks_per_sm: int = 1
     region_names: dict[int, str] | None = None
     device: str | torch.device = "cuda"
     sm_clock_khz: int | None = None
-    dummy: bool = False
+    enabled: bool = True
+    verbose: bool = False
 
     def __post_init__(self):
+        self.trace_path = Path(self.trace_path)
+        smem_cap = get_smem_cap()
         self.block_smem_bytes = self.sm_smem_available_bytes // self.blocks_per_sm
         self.segment_bytes = self.block_smem_bytes // self.warps_per_block
         if self.segment_bytes % 8 != 0:
@@ -50,17 +53,18 @@ class CutezTraceSession:
         self.block_smem_words = self.block_smem_bytes // 8
         self.total_segments = self.total_blocks * self.warps_per_block
         self.buffer_numel = self.block_smem_words * self.total_blocks
-        self.trace_path = Path(self.trace_path)
-        smem_cap = get_smem_cap()
         self.trace_config = TraceConfig(
             block_smem_bytes=self.block_smem_bytes,
             segment_bytes=self.segment_bytes,
             smem_words=self.block_smem_words,
-            dummy=self.dummy,
+            enabled=self.enabled,
             smem_capacity_bytes=smem_cap,
             total_blocks=self.total_blocks,
+            warps_per_block=self.warps_per_block,
+            sm_smem_available_bytes=self.sm_smem_available_bytes,
+            verbose=self.verbose,
         )
-        if self.dummy:
+        if not self.enabled:
             self.buffer_tensor = None
             self.buffer = None
         else:

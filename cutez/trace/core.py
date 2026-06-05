@@ -50,12 +50,12 @@ def debug_smem_usage(smem_capacity_bytes: cutlass.Int32):
     host-side ``get_smem_cap()`` helper and threading it through to device code.
     """
     tidx, _, _ = cute.arch.thread_idx()
+    bidx, bidy, bidz = cute.arch.block_idx()
     dyn = cute.arch.get_dyn_smem_size()
     bdx, bdy, bdz = cute.arch.block_dim()
     gdx, gdy, gdz = cute.arch.grid_dim()
-    zero = cutlass.Int32(0)
     base_align = cutlass.Int32(1024)
-    if tidx == zero:
+    if tidx == 0 and bidx == 0 and bidy == 0 and bidz == 0:
         num_warps = bdx * bdy * bdz // 32
         grid_total = gdx * gdy * gdz
         available = smem_capacity_bytes - base_align - dyn
@@ -139,9 +139,12 @@ class TraceConfig(ParamsBase):
     block_smem_bytes: int
     segment_bytes: int
     smem_words: int
-    dummy: bool = False
+    enabled: bool = True
     smem_capacity_bytes: int = 0
     total_blocks: int = 2
+    warps_per_block: int = 4
+    sm_smem_available_bytes: int = 0
+    verbose: bool = False
 
 
 @dataclass
@@ -152,7 +155,7 @@ class CutezTracer:
     is_leader: object = None
     recording_block: object = None
     clock_idx: cutlass.Int32 = None
-    dummy: Constexpr = const_expr(False)
+    enabled: Constexpr = const_expr(True)
 
     @classmethod
     def create(
@@ -163,8 +166,11 @@ class CutezTracer:
         cfg: TraceConfig,
         clock_ptr=None,
     ):
-        if cfg.dummy:
-            return cls(dummy=const_expr(True))
+        if cfg.verbose:
+            debug_smem_usage(cfg.smem_capacity_bytes)
+
+        if not cfg.enabled:
+            return cls(enabled=const_expr(False))
 
         if clock_ptr is None:
             clock_smem = smem.allocate_tensor(
@@ -192,7 +198,7 @@ class CutezTracer:
         )
 
     def _record(self, is_start: bool, scope_id):
-        if const_expr(self.dummy):
+        if const_expr(not self.enabled):
             return
         if isinstance(scope_id, str):
             scope_id = _intern_region(scope_id)
@@ -214,7 +220,7 @@ class CutezTracer:
         self._record(False, scope_id)
 
     def flush(self):
-        if const_expr(self.dummy):
+        if const_expr(not self.enabled):
             return
         recording_block = self.recording_block.ir_value()
         finanlize_clock(
