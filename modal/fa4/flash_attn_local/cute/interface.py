@@ -33,6 +33,9 @@ import cutlass.cute as cute
 from flash_attn.cute.cache_utils import get_jit_cache
 from flash_attn.cute.testing import is_fake_mode
 
+from cutez.trace.core import TraceConfig
+from cutez.trace.session import CutezTraceSession
+
 
 if os.environ.get("CUTE_DSL_PTXAS_PATH", None) is not None:
     from flash_attn.cute import cute_dsl_ptxas  # noqa: F401
@@ -55,17 +58,40 @@ from flash_attn.cute.flash_bwd_preprocess import FlashAttentionBackwardPreproces
 # Router to switch between original and simple implementations
 # Set USE_SIMPLE_FA4=1 in environment to use simple version
 # Set USE_SIMPLE_FA4_VERSION to select which simplified version (1, 2, etc.)
+# Set USE_TRACE_FA4=1 in environment to use trace-enabled version
 import os
 
 _USE_SIMPLE = os.environ.get("USE_SIMPLE_FA4", "0") == "1"
 _USE_SIMPLE_VERSION = int(os.environ.get("USE_SIMPLE_FA4_VERSION", "1"))
+_USE_TRACE = os.environ.get("USE_TRACE_FA4", "0") == "1"
+_TRACE_PATH = os.environ.get("TRACE_FA4_PATH", "/tmp/fa4_trace.json")
+if _USE_TRACE:
+    _USE_SIMPLE = True  # trace requires simple mode
+    _trace_session = CutezTraceSession(
+        sm_smem_available_bytes=84*8,
+        warps_per_block=4,
+        trace_path=_TRACE_PATH,
+        #enabled=False,
+        #verbose=True,
+    )
+    _trace_out = _trace_session.buffer
+    _trace_cfg = _trace_session.trace_config
+else:
+    _trace_session = None
+    _trace_out = None
+    _trace_cfg = None
 
 # Direct imports for each simple version
 from .flash_fwd_sm100_simple import FlashAttentionForwardSm100Simple
+from .flash_fwd_sm100_trace import (
+    FlashAttentionForwardSm100Simple as FlashAttentionForwardSm100Trace,
+)
 
 
 def _get_fa100_simple_class():
     version = _USE_SIMPLE_VERSION
+    if _USE_TRACE:
+        return FlashAttentionForwardSm100Trace
     return FlashAttentionForwardSm100Simple
 
 
@@ -491,11 +517,10 @@ def _flash_attn_fwd(
         arch,
         page_size not in [None, 128],  # paged KV non-TMA
         q_subtile_factor,
+        _USE_TRACE,
     )
     Fa100Simple_cls = _get_fa100_class() if _USE_SIMPLE else None
-    simple18_no_q_varlen = (
-        Fa100Simple_cls is FlashAttentionForwardSm100Simple and arch // 10 in [10, 11]
-    )
+    simple18_no_q_varlen = _USE_SIMPLE and arch // 10 in [10, 11]
     if compile_key not in _flash_attn_fwd.compile_cache:
         (
             cu_seqlens_q_tensor,
@@ -579,6 +604,8 @@ def _flash_attn_fwd(
                     head_dim=head_dim,
                     head_dim_v=head_dim_v,
                 )
+                if _USE_TRACE:
+                    fa_fwd.trace_cfg = _trace_cfg
             else:
                 fa_fwd = FlashAttentionForwardSm100(
                     head_dim,
@@ -642,8 +669,13 @@ def _flash_attn_fwd(
                     cute_aux_tensors,
                 ]
             )
+        compile_kwargs = {}
+        if _USE_TRACE:
+            compile_kwargs["trace_out"] = _trace_out
         _flash_attn_fwd.compile_cache[compile_key] = cute.compile(
-            *compile_args, options="--enable-tvm-ffi --opt-level 3 --ptxas-options '--verbose'"
+            *compile_args,
+            **compile_kwargs,
+            #options="--enable-tvm-ffi --opt-level 3 --ptxas-options '--verbose'",
         )
 
     # In "fake mode", we will take torch fake tensors as input and the expected behaviors are:
@@ -685,7 +717,14 @@ def _flash_attn_fwd(
                     aux_tensors,
                 ]
             )
-        _flash_attn_fwd.compile_cache[compile_key](*runtime_args)
+        runtime_kwargs = {}
+        if _USE_TRACE:
+            _trace_session.reset_buffer()
+            runtime_kwargs["trace_out"] = _trace_out
+        _flash_attn_fwd.compile_cache[compile_key](*runtime_args, **runtime_kwargs)
+    if _USE_TRACE and _trace_session is not None:
+        _trace_session.write_trace_json()
+        print(f"Trace written to: {_trace_session.trace_path}")
     if is_split_kv:
         _flash_attn_fwd_combine(
             out_partial,

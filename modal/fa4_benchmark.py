@@ -36,6 +36,10 @@ fa4_image = (
     .pip_install("flash-attn-4==4.0.0b4")
     .pip_install("teraxlang==3.5.1.dev4")
     .add_local_dir(root_dir / "fa4", remote_path="/workspace/fa4")
+    .add_local_dir(
+        root_dir.parent / "cutez",
+        remote_path="/workspace/cutez",
+    )
 )
 
 
@@ -45,7 +49,7 @@ fa4_image = (
     timeout=600,
     volumes={"/workspace/dump": volume},
 )
-def run_fa4_benchmark(use_simple: bool = False):
+def run_fa4_benchmark(use_simple: bool = False, use_trace: bool = False):
     import torch
     import sys
     import math
@@ -53,14 +57,15 @@ def run_fa4_benchmark(use_simple: bool = False):
     from triton.testing import do_bench
     import os
     import subprocess
-    #result = subprocess.run(
+
+    # result = subprocess.run(
     #    ["find", "/", "-name", "cuobjdump"],
     #    capture_output=True,
     #    text=True,
     #    check=True,
-    #)
-    #output = result.stdout
-    #print(output)
+    # )
+    # output = result.stdout
+    # print(output)
     cuobjdump_path = "/usr/local/cuda-13.2/bin/cuobjdump"
     from pathlib import Path
 
@@ -83,11 +88,11 @@ def run_fa4_benchmark(use_simple: bool = False):
             # 2. Run cuobjdump -res-usage to check for LMEM/Register stats
             # -res-usage is the most direct way to see if 'LMEM' > 0
             result = subprocess.run(
-                #[cuobjdump_path, "-res-usage", str(target_file)],
+                # [cuobjdump_path, "-res-usage", str(target_file)],
                 [cuobjdump_path, "--dump-sass", str(target_file)],
                 capture_output=True,
                 text=True,
-                check=True
+                check=True,
             )
 
             # 3. Write output to log file
@@ -109,6 +114,11 @@ def run_fa4_benchmark(use_simple: bool = False):
     from datetime import datetime
 
     # Set environment variable BEFORE importing flash_attn
+    if use_trace:
+        use_simple = True
+        os.environ["USE_TRACE_FA4"] = "1"
+        os.environ["TRACE_FA4_PATH"] = "/workspace/dump/fa4_trace.json"
+        print("USE_TRACE_FA4")
     if use_simple:
         os.environ["USE_SIMPLE_FA4"] = "1"
         print("USE_SIMPLE_FA4")
@@ -205,28 +215,32 @@ def run_fa4_benchmark(use_simple: bool = False):
     print("=" * 60)
 
     sys.path.insert(0, "/workspace/fa4")
+    sys.path.insert(0, "/workspace/cutez")
     from flash_attn_local.cute import interface as interface_local
 
     flash_attn_func_local = interface_local.flash_attn_func
 
-    # Warmup
-    warmup_iters = 5
-    for i in range(warmup_iters):
-        _ = flash_attn_func_local(q, k, v, causal=causal)
-        torch.cuda.synchronize()
+    # Run local version once (with warmup if not tracing)
+    if not use_trace:
+        warmup_iters = 5
+        for i in range(warmup_iters):
+            _ = flash_attn_func_local(q, k, v, causal=causal)
+            torch.cuda.synchronize()
 
-    # Run local version and collect output
     o_local, lse_local = flash_attn_func_local(q, k, v, causal=causal)
     torch.cuda.synchronize()
 
-    # Benchmark timing
-    m_local = time_fwd(flash_attn_func_local, q, k, v, causal=causal, repeats=repeats)
-    tflops_local = calc_tflops(
-        m_local.mean, batch_size, nheads, seqlen_q, seqlen_k, head_dim, causal
-    )
+    if not use_trace:
+        # Benchmark timing
+        m_local = time_fwd(
+            flash_attn_func_local, q, k, v, causal=causal, repeats=repeats
+        )
+        tflops_local = calc_tflops(
+            m_local.mean, batch_size, nheads, seqlen_q, seqlen_k, head_dim, causal
+        )
 
-    print(f"Mean time: {m_local.mean * 1e3:.3f} ms")
-    print(f"TFLOPS: {tflops_local:.2f}")
+        print(f"Mean time: {m_local.mean * 1e3:.3f} ms")
+        print(f"TFLOPS: {tflops_local:.2f}")
 
     # ===== Compute PyTorch Reference =====
     print("\n" + "=" * 60)
@@ -402,54 +416,57 @@ def run_fa4_benchmark(use_simple: bool = False):
         print(f"  Mean LSE diff: {lse_diff.mean().item():.6e}")
 
     # ===== Optional: Compare with Pip Version =====
-    print("\n" + "=" * 60)
-    print("=== Optional: Pip FA4 Comparison ===")
-    print("=" * 60)
+    if not use_trace:
+        print("\n" + "=" * 60)
+        print("=== Optional: Pip FA4 Comparison ===")
+        print("=" * 60)
 
-    try:
-        # Remove local path temporarily to import pip version
-        sys.path.remove("/workspace/fa4")
+        try:
+            # Remove local path temporarily to import pip version
+            sys.path.remove("/workspace/fa4")
 
-        from flash_attn.cute.interface import flash_attn_func as flash_attn_func_pip
+            from flash_attn.cute.interface import flash_attn_func as flash_attn_func_pip
 
-        # Warmup
-        for _ in range(5):
-            _ = flash_attn_func_pip(q, k, v, causal=causal)
-        torch.cuda.synchronize()
+            # Warmup
+            for _ in range(5):
+                _ = flash_attn_func_pip(q, k, v, causal=causal)
+            torch.cuda.synchronize()
 
-        # Run pip version and collect output
-        o_pip, lse_pip = flash_attn_func_pip(q, k, v, causal=causal)
-        torch.cuda.synchronize()
+            # Run pip version and collect output
+            o_pip, lse_pip = flash_attn_func_pip(q, k, v, causal=causal)
+            torch.cuda.synchronize()
 
-        # Benchmark timing
-        m_pip = time_fwd(flash_attn_func_pip, q, k, v, causal=causal, repeats=repeats)
-        tflops_pip = calc_tflops(
-            m_pip.mean, batch_size, nheads, seqlen_q, seqlen_k, head_dim, causal
-        )
+            # Benchmark timing
+            m_pip = time_fwd(
+                flash_attn_func_pip, q, k, v, causal=causal, repeats=repeats
+            )
+            tflops_pip = calc_tflops(
+                m_pip.mean, batch_size, nheads, seqlen_q, seqlen_k, head_dim, causal
+            )
 
-        print(f"Pip output sample values (first 5 elements):")
-        print(f"  {o_pip[0, 0, 0, :5].tolist()}")
-        print(f"Pip TFLOPS: {tflops_pip:.2f}")
+            print(f"Pip output sample values (first 5 elements):")
+            print(f"  {o_pip[0, 0, 0, :5].tolist()}")
+            print(f"Pip TFLOPS: {tflops_pip:.2f}")
 
-        # Compare pip vs reference
-        diff_pip = o_pip.float() - o_ref.float()
-        abs_diff_pip = torch.abs(diff_pip)
-        print(f"Pip vs Reference max diff: {abs_diff_pip.max().item():.6e}")
+            # Compare pip vs reference
+            diff_pip = o_pip.float() - o_ref.float()
+            abs_diff_pip = torch.abs(diff_pip)
+            print(f"Pip vs Reference max diff: {abs_diff_pip.max().item():.6e}")
 
-        # Compare local vs pip
-        diff_local_pip = o_local.float() - o_pip.float()
-        abs_diff_local_pip = torch.abs(diff_local_pip)
-        print(f"Local vs Pip max diff: {abs_diff_local_pip.max().item():.6e}")
+            # Compare local vs pip
+            diff_local_pip = o_local.float() - o_pip.float()
+            abs_diff_local_pip = torch.abs(diff_local_pip)
+            print(f"Local vs Pip max diff: {abs_diff_local_pip.max().item():.6e}")
 
-        print("\n=== Performance Comparison ===")
-        print(f"Local (Mounted): {tflops_local:.2f} TFLOPS")
-        print(f"Pip (Official):  {tflops_pip:.2f} TFLOPS")
-        perf_diff = tflops_local - tflops_pip
-        perf_diff_pct = (perf_diff / tflops_pip) * 100 if tflops_pip != 0 else 0
-        print(f"Difference:      {perf_diff:+.2f} TFLOPS ({perf_diff_pct:+.2f}%)")
+            print("\n=== Performance Comparison ===")
+            print(f"Local (Mounted): {tflops_local:.2f} TFLOPS")
+            print(f"Pip (Official):  {tflops_pip:.2f} TFLOPS")
+            perf_diff = tflops_local - tflops_pip
+            perf_diff_pct = (perf_diff / tflops_pip) * 100 if tflops_pip != 0 else 0
+            print(f"Difference:      {perf_diff:+.2f} TFLOPS ({perf_diff_pct:+.2f}%)")
 
-    except Exception as e:
-        print(f"Pip comparison skipped: {e}")
+        except Exception as e:
+            print(f"Pip comparison skipped: {e}")
 
     # Save results
     results_file = "/workspace/dump/fa4_benchmark_results.txt"
@@ -462,7 +479,8 @@ def run_fa4_benchmark(use_simple: bool = False):
         )
         f.write(f"\n")
         f.write(f"=== Performance ===\n")
-        f.write(f"Local (Mounted): {tflops_local:.2f} TFLOPS\n")
+        if not use_trace:
+            f.write(f"Local (Mounted): {tflops_local:.2f} TFLOPS\n")
         f.write(f"\n")
         f.write(f"=== Output Sample Values ===\n")
         f.write(f"Local output[0,0,0,:5]: {o_local[0, 0, 0, :5].tolist()}\n")
@@ -515,14 +533,14 @@ def run_fa4_benchmark(use_simple: bool = False):
 
     run_cuobjdump(DUMP_DIR)
 
-    #result = subprocess.run(
+    # result = subprocess.run(
     #    ["find", "/", "-name", "cuobjdump"],
     #    capture_output=True,
     #    text=True,
     #    check=True,
-    #)
-    #output = result.stdout
-    #print(output)
+    # )
+    # output = result.stdout
+    # print(output)
     # Generate HTML viewers for PTX files
     from teraxlang.tools import generate_htmls
 
@@ -535,5 +553,5 @@ def run_fa4_benchmark(use_simple: bool = False):
 
 
 @app.local_entrypoint()
-def main(use_simple: bool = False):
-    run_fa4_benchmark.remote(use_simple=use_simple)
+def main(use_simple: bool = True, use_trace: bool = True):
+    run_fa4_benchmark.remote(use_simple=use_simple, use_trace=use_trace)
