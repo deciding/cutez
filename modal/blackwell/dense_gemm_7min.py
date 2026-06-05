@@ -53,15 +53,21 @@ epilog_sync_bar_id = 1
 tmem_alloc_sync_bar_id = 2
 tmem_dealloc_sync_bar_id = 3
 
-#ab_stages = 6
+# ab_stages = 6
 acc_stage = 1
 num_c_stage = 2
 
 cluster_shape_mn = (2, 1)
 
 AUTOTUNE_CONFIGS = [
-        cutez.Config(kwargs={"mma_tiler_mn": (256, 256), "cluster_shape_mn": (2, 1), "ab_stages": ab_stages,})
-        for ab_stages in (6, 7, 8)
+    cutez.Config(
+        kwargs={
+            "mma_tiler_mn": (256, 256),
+            "cluster_shape_mn": (2, 1),
+            "ab_stages": ab_stages,
+        }
+    )
+    for ab_stages in (6, 7, 8)
 ]
 
 
@@ -506,12 +512,20 @@ def kernel(
 
 
 # tiled_mma, c_layout/epi_tile, smem_layouts, tma_atoms/tma_tensors, cluster/tile_scheduler/grid
-@cutez.autotune(configs=AUTOTUNE_CONFIGS, key=["m", "n", "k"],  cache_path='/workspace/dump/dense_gemm_7min.json')
+@cutez.autotune(
+    configs=AUTOTUNE_CONFIGS,
+    key=["m", "n", "k"],
+    cache_path="/workspace/dump/dense_gemm_7min.json",
+    force_retune=True,
+)
 @cute.jit
 def host_function(
     a: cute.Tensor,
     b: cute.Tensor,
     c: cute.Tensor,
+    m: cutlass.Constexpr,
+    n: cutlass.Constexpr,
+    k: cutlass.Constexpr,
     max_active_clusters: cutlass.Constexpr,
     stream: cuda.CUstream,
     mma_tiler_mn: cutlass.Constexpr,
@@ -658,17 +672,6 @@ def host_function(
     )
 
 
-host_function.autotune_init_kwargs = lambda: {
-    "mma_tiler_mn": mma_tiler_mnk[:2],
-    "cluster_shape_mn": cluster_shape_mn,
-}
-host_function.autotune_key_values = lambda a, b, c, *args, **kwargs: {
-    "m": a.shape[0],
-    "n": b.shape[0],
-    "k": a.shape[1],
-}
-
-
 def run_dense_gemm(
     mnk: Tuple[int, int, int],
     tolerance: float,
@@ -773,6 +776,9 @@ def run_dense_gemm(
         a_tensor,
         b_tensor,
         c_tensor,
+        m,
+        n,
+        k,
         max_active_clusters,
         current_stream,
         verbose=True,

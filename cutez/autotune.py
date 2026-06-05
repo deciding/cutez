@@ -22,6 +22,7 @@ class AutotuneSpec:
     warmup: int = 0
     rep: int = 0
     cache_results: bool = True
+    force_retune: bool = False
     cache_path: Path | None = None
     do_bench: Callable[..., Any] | None = None
 
@@ -37,6 +38,7 @@ def autotune(
     warmup: int = 0,
     rep: int = 0,
     cache_results: bool = True,
+    force_retune: bool = False,
     cache_path: str | PathLike[str] | None = None,
     do_bench: Callable[..., Any] | None = None,
 ):
@@ -51,6 +53,7 @@ def autotune(
         warmup=warmup,
         rep=rep,
         cache_results=cache_results,
+        force_retune=force_retune,
         cache_path=normalized_cache_path,
         do_bench=do_bench,
     )

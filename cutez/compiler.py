@@ -11,7 +11,6 @@ from .autotune import (
     freeze_for_cache,
     read_autotune_spec,
 )
-from ._autotune_keys import resolve_autotune_key_values
 from .benchmark import benchmark
 
 
@@ -57,13 +56,21 @@ def _tuning_key(kernel, spec, runtime_key_values):
     )
 
 
-def _candidate_kwargs(kernel, runtime_key_values, config):
-    candidate_kwargs = dict(kernel.autotune_init_kwargs())
-    for name, value in runtime_key_values.items():
-        if name in candidate_kwargs:
-            candidate_kwargs[name] = value
-    candidate_kwargs.update(config.kwargs)
-    return candidate_kwargs
+def _resolve_key_values(kernel, spec, *args, **kwargs):
+    sig = inspect.signature(kernel)
+    param_names = list(sig.parameters.keys())
+    nargs = dict(zip(param_names, args))
+    all_args = {**nargs, **kwargs}
+    result = {}
+    for name in spec.key:
+        if name not in all_args:
+            available = ", ".join(sorted(all_args)) or "none"
+            raise AutotuneError(
+                f"missing autotune key field '{name}' in resolved key values; "
+                f"available keys: {available}"
+            )
+        result[name] = all_args[name]
+    return result
 
 
 def _compile_signature(args, kwargs):
@@ -118,10 +125,7 @@ def _benchmark_args_and_kwargs(kernel, compiled, args, kwargs):
     arg_index = 0
     for param in kernel_signature.parameters.values():
         annotation_name = getattr(param.annotation, "__name__", None)
-        is_compile_time = (
-            annotation_name == "Constexpr"
-            or param.name in kernel.autotune_init_kwargs()
-        )
+        is_compile_time = annotation_name == "Constexpr"
 
         if param.kind == param.KEYWORD_ONLY:
             if param.name in kwargs and not is_compile_time:
@@ -257,7 +261,7 @@ def _load_persisted_best_config(kernel, spec, runtime_key_values, tuning_key):
         config = _config_from_spec(config, spec)
         if config is None:
             return None, had_read_error
-        candidate_kwargs = _candidate_kwargs(kernel, runtime_key_values, config)
+        candidate_kwargs = dict(config.kwargs)
         cached_best = (config, candidate_kwargs)
         _BEST_CONFIG_CACHE[tuning_key] = cached_best
         return cached_best, had_read_error
@@ -307,15 +311,14 @@ def compile(kernel, *args, **kwargs):
     if spec is not None and (
         inspect.isfunction(kernel) or autotune_spec_applies_to_call(kernel, spec)
     ):
-        if not hasattr(kernel, "autotune_init_kwargs"):
-            raise AttributeError("autotuned kernel must define autotune_init_kwargs()")
-        runtime_key_values = resolve_autotune_key_values(kernel, *args, **kwargs)
+        runtime_key_values = _resolve_key_values(kernel, spec, *args, **kwargs)
         do_bench = spec.do_bench or benchmark
         tuning_key = _tuning_key(kernel, spec, runtime_key_values)
 
-        cached_best = _BEST_CONFIG_CACHE.get(tuning_key) if spec.cache_results else None
+        use_cache = spec.cache_results and not spec.force_retune
+        cached_best = _BEST_CONFIG_CACHE.get(tuning_key) if use_cache else None
         loaded_from_disk = False
-        if cached_best is None:
+        if cached_best is None and use_cache:
             cached_best, _ = _load_persisted_best_config(
                 kernel, spec, runtime_key_values, tuning_key
             )
@@ -357,7 +360,7 @@ def compile(kernel, *args, **kwargs):
         best_candidate_kwargs = None
         failures = []
         for config in spec.configs:
-            candidate_kwargs = _candidate_kwargs(kernel, runtime_key_values, config)
+            candidate_kwargs = dict(config.kwargs)
             cached_compiled, cache_key = _get_cached_compiled_candidate(
                 kernel, candidate_kwargs, config, args, kwargs
             )

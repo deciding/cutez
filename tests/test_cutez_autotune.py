@@ -141,25 +141,18 @@ def test_compile_reads_decorated_call_metadata_before_delegating(
     monkeypatch.setattr(compiler_module.cute, "compile", fake_compile)
 
     class Kernel:
-        def __init__(self, m, tile):
-            self.m = m
+        def __init__(self, tile):
             self.tile = tile
-
-        def autotune_init_kwargs(self):
-            return {"m": self.m, "tile": self.tile}
-
-        def autotune_key_values(self, *args, **kwargs):
-            return {"m": 1}
 
         @cutez_module.autotune(
             configs=[cutez_module.Config(kwargs={"tile": 64})], key=["m"]
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, m, *args, **kwargs):
             return args, kwargs
 
-    kernel = Kernel(m=1, tile=0)
+    kernel = Kernel(tile=0)
 
-    result = cutez_module.compile(kernel, "arg0", stream="stream0")
+    result = cutez_module.compile(kernel, 1, stream="stream0")
 
     assert result == "compiled"
     assert len(read_calls) == 1
@@ -168,7 +161,7 @@ def test_compile_reads_decorated_call_metadata_before_delegating(
     assert read_calls[0][1].key == ("m",)
     assert len(calls) == 1
     assert calls[0][0][0].tile == 64
-    assert calls[0][0][1:] == ("arg0",)
+    assert calls[0][0][1:] == (1,)
     assert calls[0][1] == {"stream": "stream0"}
 
 
@@ -195,25 +188,18 @@ def test_compile_reads_decorated_function_metadata_before_delegating(
     monkeypatch.setattr(compiler_module.cute, "compile", fake_compile)
 
     class Kernel:
-        def __init__(self, n, tile):
-            self.n = n
+        def __init__(self, tile):
             self.tile = tile
-
-        def autotune_init_kwargs(self):
-            return {"n": self.n, "tile": self.tile}
-
-        def autotune_key_values(self, *args, **kwargs):
-            return {"n": 2}
 
         @cutez_module.autotune(
             configs=[cutez_module.Config(kwargs={"tile": 32})], key=["n"]
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, n, *args, **kwargs):
             return args, kwargs
 
-    kernel = Kernel(n=2, tile=0)
+    kernel = Kernel(tile=0)
 
-    result = cutez_module.compile(kernel, "arg0", stream="stream0")
+    result = cutez_module.compile(kernel, 2, stream="stream0")
 
     assert result == "compiled"
     assert len(read_calls) == 1
@@ -222,7 +208,7 @@ def test_compile_reads_decorated_function_metadata_before_delegating(
     assert read_calls[0][1].key == ("n",)
     assert len(calls) == 1
     assert calls[0][0][0].tile == 32
-    assert calls[0][0][1:] == ("arg0",)
+    assert calls[0][0][1:] == (2,)
     assert calls[0][1] == {"stream": "stream0"}
 
 
@@ -230,39 +216,22 @@ def test_compile_requires_autotune_init_kwargs_for_decorated_kernels(
     cutez_module, monkeypatch
 ):
     compiler_module = importlib.import_module("cutez.compiler")
+    autotune_module = importlib.import_module("cutez.autotune")
     monkeypatch.setattr(
         compiler_module.cute, "compile", lambda *args, **kwargs: "compiled"
     )
 
     class Kernel:
-        def autotune_key_values(self, *args, **kwargs):
-            return {"m": 1}
-
         @cutez_module.autotune(
             configs=[cutez_module.Config(kwargs={"tile": 16})], key=["m"]
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, m, *args, **kwargs):
             return args, kwargs
 
-    with pytest.raises(AttributeError, match="autotune_init_kwargs"):
-        cutez_module.compile(Kernel(), "arg0", stream="stream0")
-
-
-def test_compile_prefers_explicit_autotune_key_values_over_defaults(
-    cutez_module, monkeypatch
-):
-    from cutez._autotune_keys import resolve_autotune_key_values
-
-    class Kernel:
-        def autotune_init_kwargs(self):
-            return {"m": 1, "n": 2}
-
-        def autotune_key_values(self, *args, **kwargs):
-            return {"m": 7, "extra": 9}
-
-    values = resolve_autotune_key_values(Kernel(), "arg0", stream="stream0")
-
-    assert values == {"m": 7, "n": 2, "extra": 9}
+    with pytest.raises(
+        autotune_module.AutotuneError, match="missing autotune key field"
+    ):
+        cutez_module.compile(Kernel(), stream="stream0")
 
 
 def test_compile_autotunes_decorated_plain_host_functions(cutez_module, monkeypatch):
@@ -291,17 +260,14 @@ def test_compile_autotunes_decorated_plain_host_functions(cutez_module, monkeypa
     def host_function(m, tile):
         return (m, tile)
 
-    host_function.autotune_init_kwargs = lambda: {"m": 0, "tile": 0}
-    host_function.autotune_key_values = lambda *args, **kwargs: {"m": 7}
-
-    result = cutez_module.compile(host_function, "arg0", stream="stream0")
+    result = cutez_module.compile(host_function, 7, stream="stream0")
 
     assert result == "compiled:32"
     assert [call[0] for call in compile_calls] == [host_function, host_function]
-    assert [call[1] for call in compile_calls] == [("arg0",), ("arg0",)]
+    assert [call[1] for call in compile_calls] == [(7,), (7,)]
     assert [call[2] for call in compile_calls] == [
-        {"stream": "stream0", "m": 7, "tile": 16},
-        {"stream": "stream0", "m": 7, "tile": 32},
+        {"stream": "stream0", "tile": 16},
+        {"stream": "stream0", "tile": 32},
     ]
     assert [call[0] for call in benchmark_calls] == ["compiled:16", "compiled:32"]
 
@@ -334,19 +300,16 @@ def test_compile_reuses_cached_plain_function_candidate_on_repeated_calls(
     def host_function(m, tile):
         return (m, tile)
 
-    host_function.autotune_init_kwargs = lambda: {"m": 0, "tile": 0}
-    host_function.autotune_key_values = lambda *args, **kwargs: {"m": 7}
-
-    result0 = cutez_module.compile(host_function, "arg0", stream="stream0")
-    result1 = cutez_module.compile(host_function, "arg0", stream="stream0")
+    result0 = cutez_module.compile(host_function, 7, stream="stream0")
+    result1 = cutez_module.compile(host_function, 7, stream="stream0")
 
     assert result0 == "compiled:32"
     assert result1 == "compiled:32"
     assert [call[0] for call in compile_calls] == [host_function, host_function]
-    assert [call[1] for call in compile_calls] == [("arg0",), ("arg0",)]
+    assert [call[1] for call in compile_calls] == [(7,), (7,)]
     assert [call[2] for call in compile_calls] == [
-        {"stream": "stream0", "m": 7, "tile": 16},
-        {"stream": "stream0", "m": 7, "tile": 32},
+        {"stream": "stream0", "tile": 16},
+        {"stream": "stream0", "tile": 32},
     ]
     assert [call[0] for call in benchmark_calls] == ["compiled:16", "compiled:32"]
 
@@ -376,14 +339,11 @@ def test_compile_logs_candidates_only_when_verbose_true(
     def host_function(m, tile):
         return (m, tile)
 
-    host_function.autotune_init_kwargs = lambda: {"m": 0, "tile": 0}
-    host_function.autotune_key_values = lambda *args, **kwargs: {"m": 7}
-
-    cutez_module.compile(host_function, "arg0", stream="stream0")
+    cutez_module.compile(host_function, 7, stream="stream0")
     quiet = capsys.readouterr()
     assert quiet.out == ""
 
-    cutez_module.compile(host_function, "arg0", stream="stream0", verbose=True)
+    cutez_module.compile(host_function, 7, stream="stream0", verbose=True)
     verbose = capsys.readouterr()
     assert "[cutez.autotune] config={'tile': 16}" in verbose.out
     assert "[cutez.autotune] config={'tile': 32}" in verbose.out
@@ -417,14 +377,11 @@ def test_compile_logs_cache_hit_only_when_verbose_true(
     def host_function(m, tile):
         return (m, tile)
 
-    host_function.autotune_init_kwargs = lambda: {"m": 0, "tile": 0}
-    host_function.autotune_key_values = lambda *args, **kwargs: {"m": 7}
-
-    cutez_module.compile(host_function, "arg0", stream="stream0")
+    cutez_module.compile(host_function, 7, stream="stream0")
     first = capsys.readouterr()
     assert first.out == ""
 
-    cutez_module.compile(host_function, "arg0", stream="stream0", verbose=True)
+    cutez_module.compile(host_function, 7, stream="stream0", verbose=True)
     second = capsys.readouterr()
     assert "cache-hit" in second.out
     assert len(compile_calls) == 2
@@ -458,19 +415,17 @@ def test_compile_passes_runtime_args_and_autotune_kwargs_for_plain_host_function
     def host_function(a, b, stream, m, tile):
         return (a, b, stream, m, tile)
 
-    host_function.autotune_init_kwargs = lambda: {"m": 0, "tile": 0}
-    host_function.autotune_key_values = lambda a, b, *args, **kwargs: {
-        "m": len(a) + len(b)
-    }
-
-    result = cutez_module.compile(host_function, "aa", "bbb", stream="stream0")
+    result = cutez_module.compile(host_function, "aa", "bbb", "stream0", 5)
 
     assert result == "compiled:32"
     assert [call[0] for call in compile_calls] == [host_function, host_function]
-    assert [call[1] for call in compile_calls] == [("aa", "bbb"), ("aa", "bbb")]
+    assert [call[1] for call in compile_calls] == [
+        ("aa", "bbb", "stream0", 5),
+        ("aa", "bbb", "stream0", 5),
+    ]
     assert [call[2] for call in compile_calls] == [
-        {"stream": "stream0", "m": 5, "tile": 16},
-        {"stream": "stream0", "m": 5, "tile": 32},
+        {"tile": 16},
+        {"tile": 32},
     ]
     assert [call[0] for call in benchmark_calls] == ["compiled:16", "compiled:32"]
 
@@ -539,12 +494,9 @@ def test_compile_benchmarks_plain_host_functions_without_constexpr_positional_ar
     def host_function(a, b, compile_only: Constexpr, stream, m, tile):
         return (a, b, compile_only, stream, m, tile)
 
-    host_function.autotune_init_kwargs = lambda: {"m": 0, "tile": 0}
-    host_function.autotune_key_values = lambda a, b, *args, **kwargs: {
-        "m": len(a) + len(b)
-    }
-
-    result = cutez_module.compile(host_function, "aa", "bbb", True, stream="stream0")
+    result = cutez_module.compile(
+        host_function, "aa", "bbb", True, stream="stream0", m=5
+    )
 
     assert callable(result)
     assert [call[1] for call in compile_calls] == [("aa", "bbb", True)]
@@ -553,7 +505,12 @@ def test_compile_benchmarks_plain_host_functions_without_constexpr_positional_ar
     ]
     assert len(benchmark_calls) == 1
     assert benchmark_calls[0][1] == ("aa", "bbb")
-    assert benchmark_calls[0][2] == {"stream": "stream0", "warmup": 0, "rep": 0}
+    assert benchmark_calls[0][2] == {
+        "stream": "stream0",
+        "m": 5,
+        "warmup": 0,
+        "rep": 0,
+    }
 
 
 def test_compile_passes_candidate_meta_kwargs_to_plain_function_pre_hook(
@@ -584,10 +541,7 @@ def test_compile_passes_candidate_meta_kwargs_to_plain_function_pre_hook(
     def host_function(a, stream, m, tile):
         return (a, stream, m, tile)
 
-    host_function.autotune_init_kwargs = lambda: {"m": 0, "tile": 0}
-    host_function.autotune_key_values = lambda a, **kwargs: {"m": len(a)}
-
-    result = cutez_module.compile(host_function, "abcdef", stream="stream0")
+    result = cutez_module.compile(host_function, "abcdef", stream="stream0", m=6)
 
     assert result == "compiled:32"
     assert [call[2] for call in pre_hook_calls] == [
@@ -624,17 +578,13 @@ def test_compile_benchmarks_plain_host_functions_without_compile_time_kwargs(
     def host_function(a, b, stream, *, compile_only: Constexpr, m, tile):
         return (a, b, stream, compile_only, m, tile)
 
-    host_function.autotune_init_kwargs = lambda: {"m": 0, "tile": 0}
-    host_function.autotune_key_values = lambda a, b, *args, **kwargs: {
-        "m": len(a) + len(b)
-    }
-
     result = cutez_module.compile(
         host_function,
         "aa",
         "bbb",
         stream="stream0",
         compile_only=True,
+        m=5,
     )
 
     assert callable(result)
@@ -644,7 +594,12 @@ def test_compile_benchmarks_plain_host_functions_without_compile_time_kwargs(
     ]
     assert len(benchmark_calls) == 1
     assert benchmark_calls[0][1] == ("aa", "bbb")
-    assert benchmark_calls[0][2] == {"stream": "stream0", "warmup": 0, "rep": 0}
+    assert benchmark_calls[0][2] == {
+        "stream": "stream0",
+        "m": 5,
+        "warmup": 0,
+        "rep": 0,
+    }
 
 
 def test_compile_benchmark_preserves_later_runtime_kwargs_after_sparse_binding(
@@ -675,12 +630,7 @@ def test_compile_benchmark_preserves_later_runtime_kwargs_after_sparse_binding(
     def host_function(a, b, optional_runtime=None, stream=None, *, m, tile):
         return (a, b, optional_runtime, stream, m, tile)
 
-    host_function.autotune_init_kwargs = lambda: {"m": 0, "tile": 0}
-    host_function.autotune_key_values = lambda a, b, *args, **kwargs: {
-        "m": len(a) + len(b)
-    }
-
-    result = cutez_module.compile(host_function, "aa", "bbb", stream="stream0")
+    result = cutez_module.compile(host_function, "aa", "bbb", stream="stream0", m=5)
 
     assert callable(result)
     assert [call[1] for call in compile_calls] == [("aa", "bbb")]
@@ -689,7 +639,12 @@ def test_compile_benchmark_preserves_later_runtime_kwargs_after_sparse_binding(
     ]
     assert len(benchmark_calls) == 1
     assert benchmark_calls[0][1] == ("aa", "bbb")
-    assert benchmark_calls[0][2] == {"stream": "stream0", "warmup": 0, "rep": 0}
+    assert benchmark_calls[0][2] == {
+        "stream": "stream0",
+        "m": 5,
+        "warmup": 0,
+        "rep": 0,
+    }
 
 
 def test_compile_isolates_plain_function_caches_by_function_identity(
@@ -735,12 +690,8 @@ def test_compile_isolates_plain_function_caches_by_function_identity(
     def host_function_b(m, tile):
         return ("b", m, tile)
 
-    for host_function in (host_function_a, host_function_b):
-        host_function.autotune_init_kwargs = lambda: {"m": 0, "tile": 0}
-        host_function.autotune_key_values = lambda *args, **kwargs: {"m": 7}
-
-    result_a = cutez_module.compile(host_function_a, "arg0", stream="stream0")
-    result_b = cutez_module.compile(host_function_b, "arg0", stream="stream0")
+    result_a = cutez_module.compile(host_function_a, 7, stream="stream0")
+    result_b = cutez_module.compile(host_function_b, 7, stream="stream0")
 
     assert result_a == "compiled:host_function_a:32"
     assert result_b == "compiled:host_function_b:32"
@@ -751,10 +702,10 @@ def test_compile_isolates_plain_function_caches_by_function_identity(
         host_function_b,
     ]
     assert [call[2] for call in compile_calls] == [
-        {"stream": "stream0", "m": 7, "tile": 16},
-        {"stream": "stream0", "m": 7, "tile": 32},
-        {"stream": "stream0", "m": 7, "tile": 16},
-        {"stream": "stream0", "m": 7, "tile": 32},
+        {"stream": "stream0", "tile": 16},
+        {"stream": "stream0", "tile": 32},
+        {"stream": "stream0", "tile": 16},
+        {"stream": "stream0", "tile": 32},
     ]
     assert [call[0] for call in benchmark_calls] == [
         "compiled:host_function_a:16",
@@ -790,15 +741,8 @@ def test_compile_compiles_and_benchmarks_every_config_and_returns_fastest_candid
     monkeypatch.setattr(compiler_module, "benchmark", fake_benchmark, raising=False)
 
     class Kernel:
-        def __init__(self, mma_tiler_mn, m):
+        def __init__(self, mma_tiler_mn):
             self.mma_tiler_mn = mma_tiler_mn
-            self.m = m
-
-        def autotune_init_kwargs(self):
-            return {"mma_tiler_mn": self.mma_tiler_mn, "m": self.m}
-
-        def autotune_key_values(self, *args, **kwargs):
-            return {"m": 1}
 
         @cutez_module.autotune(
             configs=[
@@ -807,10 +751,10 @@ def test_compile_compiles_and_benchmarks_every_config_and_returns_fastest_candid
             ],
             key=["m"],
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, m, *args, **kwargs):
             return args, kwargs
 
-    result = cutez_module.compile(Kernel((64, 64), 0), "arg0", stream="stream0")
+    result = cutez_module.compile(Kernel((64, 64)), 1, "arg0", stream="stream0")
 
     assert result == "compiled:(256, 256)"
     assert [call[0].mma_tiler_mn for call in compile_calls] == [(128, 256), (256, 256)]
@@ -831,7 +775,7 @@ def test_compile_uses_runtime_key_values_when_reconstructing_candidates(
         return autotune_module.get_autotune_spec(kernel)
 
     def fake_compile(candidate_kernel, *args, **kwargs):
-        seen.append((candidate_kernel.m, candidate_kernel.tile))
+        seen.append((args[0], candidate_kernel.tile))
         return "compiled"
 
     monkeypatch.setattr(
@@ -843,23 +787,16 @@ def test_compile_uses_runtime_key_values_when_reconstructing_candidates(
     )
 
     class Kernel:
-        def __init__(self, m, tile):
-            self.m = m
+        def __init__(self, tile):
             self.tile = tile
-
-        def autotune_init_kwargs(self):
-            return {"m": self.m, "tile": self.tile}
-
-        def autotune_key_values(self, *args, **kwargs):
-            return {"m": 99}
 
         @cutez_module.autotune(
             configs=[cutez_module.Config(kwargs={"tile": 8})], key=["m"]
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, m, *args, **kwargs):
             return args, kwargs
 
-    cutez_module.compile(Kernel(7, 0), "arg0", stream="stream0")
+    cutez_module.compile(Kernel(0), 99, stream="stream0")
 
     assert seen == [(99, 8)]
 
@@ -888,15 +825,8 @@ def test_compile_runs_config_pre_hook_and_custom_do_bench(cutez_module, monkeypa
     )
 
     class Kernel:
-        def __init__(self, m, tile):
-            self.m = m
+        def __init__(self, tile):
             self.tile = tile
-
-        def autotune_init_kwargs(self):
-            return {"m": self.m, "tile": self.tile}
-
-        def autotune_key_values(self, *args, **kwargs):
-            return {"m": 1}
 
         @cutez_module.autotune(
             configs=[
@@ -912,15 +842,15 @@ def test_compile_runs_config_pre_hook_and_custom_do_bench(cutez_module, monkeypa
             rep=5,
             do_bench=fake_do_bench,
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, m, *args, **kwargs):
             return args, kwargs
 
-    result = cutez_module.compile(Kernel(1, 0), "arg0", stream="stream0")
+    result = cutez_module.compile(Kernel(0), 1, "arg0", stream="stream0")
 
     assert result.tile == 16
     assert events == [
-        (16, ("arg0",), {"stream": "stream0"}),
-        (3, 5, ("arg0",), {"stream": "stream0"}),
+        (16, (1, "arg0"), {"stream": "stream0"}),
+        (3, 5, (1, "arg0"), {"stream": "stream0"}),
     ]
 
 
@@ -938,22 +868,16 @@ def test_compile_raises_when_candidate_constructor_rejects_config(
     )
 
     class Kernel:
-        def autotune_init_kwargs(self):
-            return {"m": 1}
-
-        def autotune_key_values(self, *args, **kwargs):
-            return {"m": 1}
-
         @cutez_module.autotune(
             configs=[cutez_module.Config(kwargs={"tile": 16})], key=["m"]
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, m, *args, **kwargs):
             return args, kwargs
 
     with pytest.raises(
         autotune_module.AutotuneError, match="all autotune candidates failed"
     ) as exc_info:
-        cutez_module.compile(Kernel(), "arg0", stream="stream0")
+        cutez_module.compile(Kernel(), 1, stream="stream0")
 
     assert "Kernel() takes no arguments" in str(exc_info.value)
 
@@ -986,15 +910,8 @@ def test_compile_skips_failed_candidates_when_another_config_succeeds(
     monkeypatch.setattr(compiler_module, "benchmark", fake_benchmark, raising=False)
 
     class Kernel:
-        def __init__(self, m, tile):
-            self.m = m
+        def __init__(self, tile):
             self.tile = tile
-
-        def autotune_init_kwargs(self):
-            return {"m": self.m, "tile": self.tile}
-
-        def autotune_key_values(self, *args, **kwargs):
-            return {"m": self.m}
 
         @cutez_module.autotune(
             configs=[
@@ -1003,10 +920,10 @@ def test_compile_skips_failed_candidates_when_another_config_succeeds(
             ],
             key=["m"],
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, m, *args, **kwargs):
             return args, kwargs
 
-    result = cutez_module.compile(Kernel(7, 0), "arg0", stream="stream0")
+    result = cutez_module.compile(Kernel(0), 7, "arg0", stream="stream0")
 
     assert result == "compiled:32"
     assert compile_calls == [16, 32]
@@ -1031,15 +948,8 @@ def test_compile_raises_autotune_error_when_all_candidates_fail(
     monkeypatch.setattr(compiler_module.cute, "compile", fake_compile)
 
     class Kernel:
-        def __init__(self, m, tile):
-            self.m = m
+        def __init__(self, tile):
             self.tile = tile
-
-        def autotune_init_kwargs(self):
-            return {"m": self.m, "tile": self.tile}
-
-        def autotune_key_values(self, *args, **kwargs):
-            return {"m": self.m}
 
         @cutez_module.autotune(
             configs=[
@@ -1048,13 +958,13 @@ def test_compile_raises_autotune_error_when_all_candidates_fail(
             ],
             key=["m"],
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, m, *args, **kwargs):
             return args, kwargs
 
     with pytest.raises(
         autotune_module.AutotuneError, match="all autotune candidates failed"
     ) as exc_info:
-        cutez_module.compile(Kernel(7, 0), "arg0", stream="stream0")
+        cutez_module.compile(Kernel(0), 7, "arg0", stream="stream0")
 
     message = str(exc_info.value)
     assert "first" in message
@@ -1079,15 +989,8 @@ def test_compile_does_not_swallow_pre_hook_failures(cutez_module, monkeypatch):
     monkeypatch.setattr(compiler_module.cute, "compile", fake_compile)
 
     class Kernel:
-        def __init__(self, m, tile):
-            self.m = m
+        def __init__(self, tile):
             self.tile = tile
-
-        def autotune_init_kwargs(self):
-            return {"m": self.m, "tile": self.tile}
-
-        def autotune_key_values(self, *args, **kwargs):
-            return {"m": self.m}
 
         @cutez_module.autotune(
             configs=[
@@ -1101,11 +1004,11 @@ def test_compile_does_not_swallow_pre_hook_failures(cutez_module, monkeypatch):
             ],
             key=["m"],
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, m, *args, **kwargs):
             return args, kwargs
 
     with pytest.raises(RuntimeError, match="pre hook failed") as exc_info:
-        cutez_module.compile(Kernel(7, 0), "arg0", stream="stream0")
+        cutez_module.compile(Kernel(0), 7, "arg0", stream="stream0")
 
     assert exc_info.type is RuntimeError
 
@@ -1135,15 +1038,8 @@ def test_compile_skips_failed_benchmarks_when_another_config_succeeds(
     monkeypatch.setattr(compiler_module.cute, "compile", fake_compile)
 
     class Kernel:
-        def __init__(self, m, tile):
-            self.m = m
+        def __init__(self, tile):
             self.tile = tile
-
-        def autotune_init_kwargs(self):
-            return {"m": self.m, "tile": self.tile}
-
-        def autotune_key_values(self, *args, **kwargs):
-            return {"m": self.m}
 
         @cutez_module.autotune(
             configs=[
@@ -1153,10 +1049,10 @@ def test_compile_skips_failed_benchmarks_when_another_config_succeeds(
             key=["m"],
             do_bench=failing_do_bench,
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, m, *args, **kwargs):
             return args, kwargs
 
-    result = cutez_module.compile(Kernel(7, 0), "arg0", stream="stream0")
+    result = cutez_module.compile(Kernel(0), 7, "arg0", stream="stream0")
 
     assert result == "compiled:32"
     assert benchmark_calls == ["compiled:16", "compiled:32"]
@@ -1183,15 +1079,8 @@ def test_compile_raises_autotune_error_when_all_benchmarks_fail(
     monkeypatch.setattr(compiler_module.cute, "compile", fake_compile)
 
     class Kernel:
-        def __init__(self, m, tile):
-            self.m = m
+        def __init__(self, tile):
             self.tile = tile
-
-        def autotune_init_kwargs(self):
-            return {"m": self.m, "tile": self.tile}
-
-        def autotune_key_values(self, *args, **kwargs):
-            return {"m": self.m}
 
         @cutez_module.autotune(
             configs=[
@@ -1201,13 +1090,13 @@ def test_compile_raises_autotune_error_when_all_benchmarks_fail(
             key=["m"],
             do_bench=failing_do_bench,
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, m, *args, **kwargs):
             return args, kwargs
 
     with pytest.raises(
         autotune_module.AutotuneError, match="all autotune candidates failed"
     ) as exc_info:
-        cutez_module.compile(Kernel(7, 0), "arg0", stream="stream0")
+        cutez_module.compile(Kernel(0), 7, "arg0", stream="stream0")
 
     message = str(exc_info.value)
     assert "broken_a" in message
@@ -1228,27 +1117,20 @@ def test_compile_raises_clear_error_for_missing_autotune_key(cutez_module, monke
     )
 
     class Kernel:
-        def __init__(self, m, tile):
-            self.m = m
+        def __init__(self, tile):
             self.tile = tile
-
-        def autotune_init_kwargs(self):
-            return {"m": self.m, "tile": self.tile}
-
-        def autotune_key_values(self, *args, **kwargs):
-            return {"m": self.m}
 
         @cutez_module.autotune(
             configs=[cutez_module.Config(kwargs={"tile": 16})], key=["missing_field"]
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, m, *args, **kwargs):
             return args, kwargs
 
     with pytest.raises(
         autotune_module.AutotuneError,
         match="missing autotune key field 'missing_field'",
     ) as exc_info:
-        cutez_module.compile(Kernel(7, 0), "arg0", stream="stream0")
+        cutez_module.compile(Kernel(0), 7, "arg0", stream="stream0")
 
     assert "available keys" in str(exc_info.value)
 
@@ -1277,15 +1159,8 @@ def test_compile_caches_best_config_by_tuning_key(cutez_module, monkeypatch):
     monkeypatch.setattr(compiler_module, "benchmark", fake_benchmark, raising=False)
 
     class Kernel:
-        def __init__(self, m, tile):
-            self.m = m
+        def __init__(self, tile):
             self.tile = tile
-
-        def autotune_init_kwargs(self):
-            return {"m": self.m, "tile": self.tile}
-
-        def autotune_key_values(self, *args, **kwargs):
-            return {"m": self.m}
 
         @cutez_module.autotune(
             configs=[
@@ -1294,13 +1169,13 @@ def test_compile_caches_best_config_by_tuning_key(cutez_module, monkeypatch):
             ],
             key=["m"],
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, m, *args, **kwargs):
             return args, kwargs
 
-    kernel = Kernel(7, 0)
+    kernel = Kernel(0)
 
-    first = cutez_module.compile(kernel, "arg0", stream="stream0")
-    second = cutez_module.compile(kernel, "arg0", stream="stream0")
+    first = cutez_module.compile(kernel, 7, "arg0", stream="stream0")
+    second = cutez_module.compile(kernel, 7, "arg0", stream="stream0")
 
     assert first == "compiled:32"
     assert second == "compiled:32"
@@ -1335,15 +1210,8 @@ def test_compile_persists_winning_best_config_to_json(
     monkeypatch.setattr(compiler_module, "benchmark", fake_benchmark, raising=False)
 
     class Kernel:
-        def __init__(self, m, tile):
-            self.m = m
+        def __init__(self, tile):
             self.tile = tile
-
-        def autotune_init_kwargs(self):
-            return {"m": self.m, "tile": self.tile}
-
-        def autotune_key_values(self, *args, **kwargs):
-            return {"m": self.m}
 
         @cutez_module.autotune(
             configs=[
@@ -1353,10 +1221,10 @@ def test_compile_persists_winning_best_config_to_json(
             key=["m"],
             cache_path=cache_path,
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, m, *args, **kwargs):
             return args, kwargs
 
-    result = cutez_module.compile(Kernel(7, 0), "arg0", stream="stream0")
+    result = cutez_module.compile(Kernel(0), 7, "arg0", stream="stream0")
 
     assert result == "compiled:32"
     assert compile_calls == [16, 32]
@@ -1430,15 +1298,8 @@ def test_compile_loads_persisted_best_config_before_benchmarking(
     compiler_module._BEST_CONFIG_CACHE.clear()
 
     class Kernel:
-        def __init__(self, m, tile):
-            self.m = m
+        def __init__(self, tile):
             self.tile = tile
-
-        def autotune_init_kwargs(self):
-            return {"m": self.m, "tile": self.tile}
-
-        def autotune_key_values(self, *args, **kwargs):
-            return {"m": self.m}
 
         @cutez_module.autotune(
             configs=[
@@ -1448,10 +1309,10 @@ def test_compile_loads_persisted_best_config_before_benchmarking(
             key=["m"],
             cache_path=cache_path,
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, m, *args, **kwargs):
             return args, kwargs
 
-    result = cutez_module.compile(Kernel(7, 0), "arg0", stream="stream0")
+    result = cutez_module.compile(Kernel(0), 7, "arg0", stream="stream0")
 
     assert result == "compiled:32"
     assert compile_calls == [32]
@@ -1462,7 +1323,7 @@ def test_compile_loads_persisted_best_config_before_benchmarking(
     assert cached_config == cutez_module.Config(
         kwargs={"tile": 32}, name="fast", pre_hook=None
     )
-    assert cached_candidate_kwargs == {"m": 7, "tile": 32}
+    assert cached_candidate_kwargs == {"tile": 32}
 
 
 def test_compile_rejects_persisted_best_config_not_in_current_spec(
@@ -1512,15 +1373,8 @@ def test_compile_rejects_persisted_best_config_not_in_current_spec(
     compiler_module._BEST_CONFIG_CACHE.clear()
 
     class Kernel:
-        def __init__(self, m, tile):
-            self.m = m
+        def __init__(self, tile):
             self.tile = tile
-
-        def autotune_init_kwargs(self):
-            return {"m": self.m, "tile": self.tile}
-
-        def autotune_key_values(self, *args, **kwargs):
-            return {"m": self.m}
 
         @cutez_module.autotune(
             configs=[
@@ -1530,10 +1384,10 @@ def test_compile_rejects_persisted_best_config_not_in_current_spec(
             key=["m"],
             cache_path=cache_path,
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, m, *args, **kwargs):
             return args, kwargs
 
-    result = cutez_module.compile(Kernel(7, 0), "arg0", stream="stream0")
+    result = cutez_module.compile(Kernel(0), 7, "arg0", stream="stream0")
 
     assert result == "compiled:32"
     assert compile_calls == [16, 32]
@@ -1570,16 +1424,8 @@ def test_compile_skips_persisting_non_json_serializable_best_config(
     monkeypatch.setattr(compiler_module, "benchmark", fake_benchmark, raising=False)
 
     class Kernel:
-        def __init__(self, problem, tile, marker=None):
-            self.problem = problem
+        def __init__(self, tile, marker=None):
             self.tile = tile
-            self.marker = marker
-
-        def autotune_init_kwargs(self):
-            return {"problem": self.problem, "tile": self.tile, "marker": self.marker}
-
-        def autotune_key_values(self, *args, **kwargs):
-            return {"problem": self.problem}
 
         @cutez_module.autotune(
             configs=[
@@ -1589,12 +1435,11 @@ def test_compile_skips_persisting_non_json_serializable_best_config(
                 ),
             ],
             key=["problem"],
-            cache_path=cache_path,
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, problem, *args, **kwargs):
             return args, kwargs
 
-    result = cutez_module.compile(Kernel(7, 0), "arg0", stream="stream0")
+    result = cutez_module.compile(Kernel(0), 7, "arg0", stream="stream0")
 
     assert result == "compiled:32"
     assert compile_calls == [16, 32]
@@ -1633,18 +1478,8 @@ def test_compile_reuses_persisted_best_config_with_tuple_keys_and_kwargs(
     compiler_module._BEST_CONFIG_CACHE.clear()
 
     class Kernel:
-        def __init__(self, problem_shape, tile_shape):
-            self.problem_shape = problem_shape
+        def __init__(self, tile_shape):
             self.tile_shape = tile_shape
-
-        def autotune_init_kwargs(self):
-            return {
-                "problem_shape": self.problem_shape,
-                "tile_shape": self.tile_shape,
-            }
-
-        def autotune_key_values(self, *args, **kwargs):
-            return {"problem_shape": self.problem_shape}
 
         @cutez_module.autotune(
             configs=[
@@ -1654,14 +1489,14 @@ def test_compile_reuses_persisted_best_config_with_tuple_keys_and_kwargs(
             key=["problem_shape"],
             cache_path=cache_path,
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, problem_shape, *args, **kwargs):
             return args, kwargs
 
-    first = cutez_module.compile(Kernel((64, 64), (0, 0)), "arg0", stream="stream0")
+    first = cutez_module.compile(Kernel((0, 0)), (64, 64), "arg0", stream="stream0")
     first_output = capsys.readouterr().out
     compiler_module._BEST_CONFIG_CACHE.clear()
     second = cutez_module.compile(
-        Kernel((64, 64), (0, 0)), "arg0", stream="stream0", verbose=True
+        Kernel((0, 0)), (64, 64), "arg0", stream="stream0", verbose=True
     )
     second_output = capsys.readouterr().out
 
@@ -1702,15 +1537,8 @@ def test_compile_treats_parseable_non_object_disk_cache_as_malformed(
     compiler_module._BEST_CONFIG_CACHE.clear()
 
     class Kernel:
-        def __init__(self, m, tile):
-            self.m = m
+        def __init__(self, tile):
             self.tile = tile
-
-        def autotune_init_kwargs(self):
-            return {"m": self.m, "tile": self.tile}
-
-        def autotune_key_values(self, *args, **kwargs):
-            return {"m": self.m}
 
         @cutez_module.autotune(
             configs=[
@@ -1720,10 +1548,10 @@ def test_compile_treats_parseable_non_object_disk_cache_as_malformed(
             key=["m"],
             cache_path=cache_path,
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, m, *args, **kwargs):
             return args, kwargs
 
-    result = cutez_module.compile(Kernel(7, 0), "arg0", stream="stream0")
+    result = cutez_module.compile(Kernel(0), 7, "arg0", stream="stream0")
 
     assert result == "compiled:32"
     assert compile_calls == [16, 32]
@@ -1775,16 +1603,8 @@ def test_compile_skips_persisting_circular_best_config_value(
     circular_marker.append(circular_marker)
 
     class Kernel:
-        def __init__(self, problem, tile, marker=None):
-            self.problem = problem
+        def __init__(self, tile, marker=None):
             self.tile = tile
-            self.marker = marker
-
-        def autotune_init_kwargs(self):
-            return {"problem": self.problem, "tile": self.tile, "marker": self.marker}
-
-        def autotune_key_values(self, *args, **kwargs):
-            return {"problem": self.problem}
 
         @cutez_module.autotune(
             configs=[
@@ -1794,12 +1614,11 @@ def test_compile_skips_persisting_circular_best_config_value(
                 ),
             ],
             key=["problem"],
-            cache_path=cache_path,
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, problem, *args, **kwargs):
             return args, kwargs
 
-    result = cutez_module.compile(Kernel(7, 0), "arg0", stream="stream0")
+    result = cutez_module.compile(Kernel(0), 7, "arg0", stream="stream0")
 
     assert result == "compiled:32"
     assert compile_calls == [16, 32]
@@ -1834,15 +1653,8 @@ def test_compile_skips_disk_persistence_when_any_config_has_pre_hook(
     monkeypatch.setattr(compiler_module, "benchmark", fake_benchmark, raising=False)
 
     class Kernel:
-        def __init__(self, m, tile):
-            self.m = m
+        def __init__(self, tile):
             self.tile = tile
-
-        def autotune_init_kwargs(self):
-            return {"m": self.m, "tile": self.tile}
-
-        def autotune_key_values(self, *args, **kwargs):
-            return {"m": self.m}
 
         @cutez_module.autotune(
             configs=[
@@ -1858,10 +1670,10 @@ def test_compile_skips_disk_persistence_when_any_config_has_pre_hook(
             key=["m"],
             cache_path=cache_path,
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, m, *args, **kwargs):
             return args, kwargs
 
-    result = cutez_module.compile(Kernel(7, 0), "arg0", stream="stream0")
+    result = cutez_module.compile(Kernel(0), 7, "arg0", stream="stream0")
 
     assert result == "compiled:32"
     assert compile_calls == [16, 32]
@@ -1898,15 +1710,8 @@ def test_compile_heals_malformed_disk_cache_after_successful_retune(
     compiler_module._BEST_CONFIG_CACHE.clear()
 
     class Kernel:
-        def __init__(self, m, tile):
-            self.m = m
+        def __init__(self, tile):
             self.tile = tile
-
-        def autotune_init_kwargs(self):
-            return {"m": self.m, "tile": self.tile}
-
-        def autotune_key_values(self, *args, **kwargs):
-            return {"m": self.m}
 
         @cutez_module.autotune(
             configs=[
@@ -1916,10 +1721,10 @@ def test_compile_heals_malformed_disk_cache_after_successful_retune(
             key=["m"],
             cache_path=cache_path,
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, m, *args, **kwargs):
             return args, kwargs
 
-    result = cutez_module.compile(Kernel(7, 0), "arg0", stream="stream0")
+    result = cutez_module.compile(Kernel(0), 7, "arg0", stream="stream0")
 
     assert result == "compiled:32"
     assert compile_calls == [16, 32]
@@ -1997,15 +1802,8 @@ def test_compile_reports_verbose_disk_loaded_best_config_when_compile_cache_is_w
     compiler_module._BEST_CONFIG_CACHE.clear()
 
     class Kernel:
-        def __init__(self, m, tile):
-            self.m = m
+        def __init__(self, tile):
             self.tile = tile
-
-        def autotune_init_kwargs(self):
-            return {"m": self.m, "tile": self.tile}
-
-        def autotune_key_values(self, *args, **kwargs):
-            return {"m": self.m}
 
         @cutez_module.autotune(
             configs=[
@@ -2015,14 +1813,14 @@ def test_compile_reports_verbose_disk_loaded_best_config_when_compile_cache_is_w
             key=["m"],
             cache_path=cache_path,
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, m, *args, **kwargs):
             return args, kwargs
 
-    kernel = Kernel(7, 0)
+    kernel = Kernel(0)
 
-    first = cutez_module.compile(kernel, "arg0", stream="stream0", verbose=True)
+    first = cutez_module.compile(kernel, 7, "arg0", stream="stream0", verbose=True)
     first_output = capsys.readouterr().out
-    second = cutez_module.compile(kernel, "arg0", stream="stream0", verbose=True)
+    second = cutez_module.compile(kernel, 7, "arg0", stream="stream0", verbose=True)
     second_output = capsys.readouterr().out
 
     assert first == "compiled:32"
@@ -2045,7 +1843,7 @@ def test_compile_reuses_compiled_candidates_across_tuning_keys(
         return autotune_module.get_autotune_spec(kernel)
 
     def fake_compile(candidate_kernel, *args, **kwargs):
-        compile_calls.append((candidate_kernel.m, candidate_kernel.tile))
+        compile_calls.append((args[0], candidate_kernel.tile))
         return f"compiled:{candidate_kernel.tile}"
 
     def fake_benchmark(compiled_kernel, *args, **kwargs):
@@ -2059,16 +1857,8 @@ def test_compile_reuses_compiled_candidates_across_tuning_keys(
     monkeypatch.setattr(compiler_module, "benchmark", fake_benchmark, raising=False)
 
     class Kernel:
-        def __init__(self, m, tile):
-            self.m = m
+        def __init__(self, tile):
             self.tile = tile
-            self.problem_id = 7
-
-        def autotune_init_kwargs(self):
-            return {"m": self.m, "tile": self.tile}
-
-        def autotune_key_values(self, arg0, **kwargs):
-            return {"problem_id": self.problem_id}
 
         @cutez_module.autotune(
             configs=[
@@ -2077,18 +1867,22 @@ def test_compile_reuses_compiled_candidates_across_tuning_keys(
             ],
             key=["problem_id"],
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, problem_id, *args, **kwargs):
             return args, kwargs
 
-    kernel = Kernel(0, 0)
+    kernel = Kernel(0)
 
-    first = cutez_module.compile(kernel, "shape", stream="stream0")
-    kernel.problem_id = 9
-    second = cutez_module.compile(kernel, "shape", stream="stream0")
+    first = cutez_module.compile(kernel, 7, "shape", stream="stream0")
+    second = cutez_module.compile(kernel, 9, "shape", stream="stream0")
 
     assert first == "compiled:32"
     assert second == "compiled:32"
-    assert compile_calls == [(0, 16), (0, 32)]
+    assert compile_calls == [
+        (7, 16),
+        (7, 32),
+        (9, 16),
+        (9, 32),
+    ]
     assert benchmark_calls == [
         "compiled:16",
         "compiled:32",
@@ -2123,18 +1917,12 @@ def test_compile_cache_distinguishes_positional_compile_inputs(
         def __init__(self, tile):
             self.tile = tile
 
-        def autotune_init_kwargs(self):
-            return {"tile": self.tile}
-
-        def autotune_key_values(self, problem_id, **kwargs):
-            return {"problem_id": problem_id}
-
         @cutez_module.autotune(
             configs=[cutez_module.Config(kwargs={"tile": 16})],
             key=["problem_id"],
             cache_results=False,
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, problem_id, *args, **kwargs):
             return args, kwargs
 
     kernel = Kernel(0)
@@ -2174,12 +1962,6 @@ def test_compile_cache_distinguishes_configs_with_different_pre_hooks(
             self.tile = tile
             self.marker = marker
 
-        def autotune_init_kwargs(self):
-            return {"tile": self.tile, "marker": self.marker}
-
-        def autotune_key_values(self, problem_id, **kwargs):
-            return {"problem_id": problem_id}
-
         @cutez_module.autotune(
             configs=[
                 cutez_module.Config(
@@ -2198,7 +1980,7 @@ def test_compile_cache_distinguishes_configs_with_different_pre_hooks(
             key=["problem_id"],
             cache_results=False,
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, problem_id, *args, **kwargs):
             return args, kwargs
 
     kernel = Kernel(0)
@@ -2242,18 +2024,12 @@ def test_compile_cache_accepts_unhashable_positional_inputs(cutez_module, monkey
             self.tile = tile
             self.shape_meta = shape_meta or {"sizes": [1, 2]}
 
-        def autotune_init_kwargs(self):
-            return {"tile": self.tile, "shape_meta": self.shape_meta}
-
-        def autotune_key_values(self, problem_id, **kwargs):
-            return {"problem_id": problem_id.label}
-
         @cutez_module.autotune(
             configs=[cutez_module.Config(kwargs={"tile": 16})],
             key=["problem_id"],
             cache_results=False,
         )
-        def __call__(self, *args, **kwargs):
+        def __call__(self, problem_id, *args, **kwargs):
             return args, kwargs
 
     kernel = Kernel(0)

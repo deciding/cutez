@@ -365,7 +365,7 @@ def kernel(
     num_k_tiles = cute.size(gA, mode=[3])
 
     tracer = CutezTracer.create(trace_out, seg_idx=warp_idx, smem=smem, cfg=trace_cfg)
-    #if tidx == 0 and bidx == 0 and bidy == 0 and bidz == 0:
+    # if tidx == 0 and bidx == 0 and bidy == 0 and bidz == 0:
     #    smem_cap = cutlass.Int32(232448)
     #    debug_smem_usage(smem_cap)
 
@@ -386,7 +386,7 @@ def kernel(
 
             ab_producer_state.reset_count()
 
-            #tracer.enter_scope("load_inner")
+            # tracer.enter_scope("load_inner")
             for k_tile in cutlass.range(
                 num_k_tiles, unroll=1
             ):  # no unrolling by default
@@ -408,7 +408,7 @@ def kernel(
                 )
                 ab_producer_state.advance()
                 tracer.exit_scope("load_inner")
-            #tracer.exit_scope("load_inner")
+            # tracer.exit_scope("load_inner")
             tile_sched.advance_to_next_work()
             work_tile = tile_sched.get_current_work()
 
@@ -540,11 +540,11 @@ def kernel(
 
 
 # tiled_mma, c_layout/epi_tile, smem_layouts, tma_atoms/tma_tensors, cluster/tile_scheduler/grid
-#@cutez.autotune(
+# @cutez.autotune(
 #    configs=AUTOTUNE_CONFIGS,
 #    key=["m", "n", "k"],
 #    cache_path="/workspace/dump/dense_gemm_8_trace.json",
-#)
+# )
 @cute.jit
 def host_function(
     a: cute.Tensor,
@@ -699,17 +699,6 @@ def host_function(
     )
 
 
-host_function.autotune_init_kwargs = lambda: {
-    "mma_tiler_mn": mma_tiler_mnk[:2],
-    "cluster_shape_mn": cluster_shape_mn,
-}
-host_function.autotune_key_values = lambda a, b, c, *args, **kwargs: {
-    "m": a.shape[0],
-    "n": b.shape[0],
-    "k": a.shape[1],
-}
-
-
 def run_dense_gemm(
     mnk: Tuple[int, int, int],
     tolerance: float,
@@ -840,10 +829,12 @@ def run_dense_gemm(
         current_stream,
         trace_out,
         trace_cfg,
-        (256, 256), (2, 1), 6,
+        (256, 256),
+        (2, 1),
+        6,
         verbose=True,
-        #options="--opt-level 0"
-        #options="--ptxas-options '--opt-level=0'"
+        # options="--opt-level 0"
+        # options="--ptxas-options '--opt-level=0'"
     )
 
     def compare(a_torch_cpu, b_torch_cpu, c_torch_gpu, c_dtype, tolerance):
