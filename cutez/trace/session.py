@@ -19,7 +19,7 @@ from pathlib import Path
 import torch
 from cutlass.cute.runtime import from_dlpack
 
-from .core import TraceConfig
+from .core import TraceConfig, get_smem_cap
 from .format import (
     ChromeTraceEvent,
     decode_ring_events,
@@ -51,11 +51,13 @@ class CutezTraceSession:
         self.total_segments = self.total_blocks * self.warps_per_block
         self.buffer_numel = self.block_smem_words * self.total_blocks
         self.trace_path = Path(self.trace_path)
+        smem_cap = get_smem_cap()
         self.trace_config = TraceConfig(
             block_smem_bytes=self.block_smem_bytes,
             segment_bytes=self.segment_bytes,
             smem_words=self.block_smem_words,
             dummy=self.dummy,
+            smem_capacity_bytes=smem_cap,
         )
         if self.dummy:
             self.buffer_tensor = None

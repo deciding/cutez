@@ -366,8 +366,7 @@ def kernel(
 
     tracer = CutezTracer.create(trace_out, seg_idx=warp_idx, smem=smem, cfg=trace_cfg)
     # if tidx == 0 and bidx == 0 and bidy == 0 and bidz == 0:
-    #    smem_cap = cutlass.Int32(232448)
-    #    debug_smem_usage(smem_cap)
+    #    debug_smem_usage(trace_cfg.smem_capacity_bytes)
 
     if warp_idx == tma_warp_id:
         tracer.enter_scope("load")
@@ -775,7 +774,6 @@ def run_dense_gemm(
         )
 
     if trace_path is not None:
-        get_smem_cap()
         trace_session = CutezTraceSession(
             sm_smem_available_bytes=1920,
             total_blocks=148,

@@ -9,7 +9,7 @@ import cutlass.cute as cute
 import torch
 from cutlass import Int32
 
-from .core import CutezTracer, TraceConfig, debug_smem_usage, get_smem_cap
+from .core import CutezTracer, TraceConfig, debug_smem_usage
 from .session import CutezTraceSession
 
 THREADS = 128
@@ -48,7 +48,7 @@ def sample_trace_kernel(out: cute.Tensor, iters: Int32, trace_cfg: TraceConfig):
     # Keep the arithmetic live without changing the trace structure.
     if tidx == 0:
         cute.printf(acc)
-        # debug_smem_usage(101376)
+        # debug_smem_usage(trace_cfg.smem_capacity_bytes)
 
     cute.arch.sync_threads()
     tracer.flush()
@@ -71,7 +71,6 @@ def run_sample_trace(trace_path: str | Path, *, iters: int = 4):
         trace_path=trace_path,
         dummy=False,
     )
-    get_smem_cap()
     compiled = cute.compile(
         launch_sample_trace, session.buffer, Int32(iters), session.trace_config
     )

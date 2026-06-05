@@ -134,6 +134,7 @@ class TraceConfig(ParamsBase):
     segment_bytes: int
     smem_words: int
     dummy: bool = False
+    smem_capacity_bytes: int = 0
 
 
 @dataclass
@@ -258,11 +259,11 @@ def clock_record(
         is_align_stack=False,
         asm_dialect=llvm.AsmDialect.AD_ATT,
     )
-    #tidx, _, _ = cute.arch.thread_idx()
-    #bidx, bidy, bidz = cute.arch.block_idx()
-    #gdx, gdy, _ = cute.arch.grid_dim()
-    #block_linear = bidx + gdx*bidy + gdx*gdy*bidz
-    #if tidx == 160:
+    # tidx, _, _ = cute.arch.thread_idx()
+    # bidx, bidy, bidz = cute.arch.block_idx()
+    # gdx, gdy, _ = cute.arch.grid_dim()
+    # block_linear = bidx + gdx*bidy + gdx*gdy*bidz
+    # if tidx == 160:
     #    cute.printf("{} clock_hi: {}", block_linear, clock_hi)
     #    cute.printf("{} clock_lo: {}", block_linear, clock_lo)
     clock_hi = llvm.AndOp(clock_hi, mask).result
