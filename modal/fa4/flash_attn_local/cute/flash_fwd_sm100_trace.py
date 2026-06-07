@@ -928,6 +928,7 @@ class FlashAttentionForwardSm100Simple:
                 num_splits,
                 SeqlenInfoCls,
                 TileSchedulerCls,
+                tracer
             )
             # Dealloc the tensor memory buffer
             tmem.relinquish_alloc_permit()
@@ -1212,6 +1213,7 @@ class FlashAttentionForwardSm100Simple:
         num_splits: Int32,
         SeqlenInfoCls: Callable,
         TileSchedulerCls: Callable,
+        tracer: CutezTracer
     ):
         tSrQ = tiled_mma_qk.make_fragment_A(sQ)
         tSrK = tiled_mma_qk.make_fragment_B(sK)
@@ -1345,11 +1347,13 @@ class FlashAttentionForwardSm100Simple:
                     # sm100_utils.gemm(tiled_mma_qk, tStS[None, None, None, stage], tSrQ[None, None, None, stage], tSrKi, zero_init=True)
                     sK_cur = sK[None, None, None, Ki_index]
                     # gemm_Si[stage](tCrB=tSrKi, sB=sK_cur)
+                    tracer.enter_scope("gemm_Si")
                     gemm_Si[stage](  # A_smem_desc precomputed
                         smem_desc_start_b=sm100_desc.make_smem_desc_start_addr(
                             sK_cur.iterator
                         )
                     )
+                    tracer.exit_scope("gemm_Si")
                     # gemm_Si[stage](tCrB=tSrKi)
                     # 4. release S0 / S1
                     pipeline_s_p_o.producer_commit_w_index(stage)  # q_stages
