@@ -58,7 +58,7 @@ cutlass_image = (
 
 cutlass_image = (
     cutlass_image.pip_install("torch", "pytest")
-    .pip_install("quack")
+    .pip_install("quack-kernels==0.5.0")
     .pip_install("nvidia-cutlass-dsl>=4.4.1")
     ## cutez 2: local build
     # .add_local_dir(
@@ -556,6 +556,7 @@ def run_dense_gemm():
         from cuteDSL.blackwell.dense_gemm_8_tracer import (
             run_dense_gemm,
         )
+        os.environ["QUACK_TRACE"] = "0"
 
         run_dense_gemm(
             (M, N, K),
@@ -567,6 +568,7 @@ def run_dense_gemm():
             normal_mean=NORMAL_MEAN,
             normal_std=NORMAL_STD,
             trace_path=os.path.join(DUMP_DIR, "trace_dense_gemm_8.json"),
+            quack_trace_path=os.path.join(DUMP_DIR, "quack_trace_dense_gemm_8.json"),
         )
 
     print(f"\nDone! Results saved to: {DUMP_DIR}")

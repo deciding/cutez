@@ -34,6 +34,8 @@ import cutlass.utils.blackwell_helpers as sm100_utils
 from cutlass.cute.runtime import from_dlpack
 import cutlass.cute.testing as testing
 
+from quack.trace import TraceContext, TraceSession
+
 import cuda.bindings.driver as cuda
 
 # types, tiler, cluster, warp ids, stages
@@ -101,6 +103,7 @@ def kernel(
     ab_stages: cutlass.Constexpr,
     trace_out: cute.Tensor,
     trace_cfg: TraceConfig,
+    trace_ptr: cutlass.Int64,
 ):
 
     # coords
@@ -365,9 +368,11 @@ def kernel(
     num_k_tiles = cute.size(gA, mode=[3])
 
     tracer = CutezTracer.create(trace_out, seg_idx=warp_idx, smem=smem, cfg=trace_cfg)
+    ctx = TraceContext.create(trace_ptr)
 
     if warp_idx == tma_warp_id:
         tracer.enter_scope("load")
+        ctx.b("load")
         while work_tile.is_valid_tile:
             cur_tile_coord = work_tile.tile_idx
             # (cluster_m, cluster_n, None)
@@ -388,6 +393,7 @@ def kernel(
                 num_k_tiles, unroll=1
             ):  # no unrolling by default
                 tracer.enter_scope("load_inner")
+                ctx.b("load_inner")
                 ab_pipeline.producer_acquire(ab_producer_state)
                 cute.copy(
                     tma_atom_a,
@@ -404,17 +410,21 @@ def kernel(
                     mcast_mask=b_full_mcast_mask,
                 )
                 ab_producer_state.advance()
+                ctx.e("load_inner")
                 tracer.exit_scope("load_inner")
             # tracer.exit_scope("load_inner")
             tile_sched.advance_to_next_work()
             work_tile = tile_sched.get_current_work()
 
         ab_pipeline.producer_tail(ab_producer_state)
+        ctx.e("load")
         tracer.exit_scope("load")
         tracer.flush()
+        ctx.flush()
 
     if warp_idx == mma_warp_id:
         tracer.enter_scope("mma")
+        ctx.b("mma")
         while work_tile.is_valid_tile:
             cur_tile_coord = work_tile.tile_idx
             mma_coord_mnk = (
@@ -432,6 +442,7 @@ def kernel(
 
             for k_tile_idx in cutlass.range(num_k_tiles):  # num of mma instrs
                 tracer.enter_scope("mma_inner")
+                ctx.b("mma_inner")
                 if is_leader_cta:
                     ab_pipeline.consumer_wait(ab_consumer_state)
                     num_k_blocks = cute.size(tCrA, mode=[2])
@@ -453,6 +464,7 @@ def kernel(
 
                     ab_pipeline.consumer_release(ab_consumer_state)
                     ab_consumer_state.advance()
+                ctx.e("mma_inner")
                 tracer.exit_scope("mma_inner")
 
             if is_leader_cta:
@@ -463,11 +475,14 @@ def kernel(
             work_tile = tile_sched.get_current_work()
 
         acc_pipeline.producer_tail(acc_producer_state)
+        ctx.e("mma")
         tracer.exit_scope("mma")
         tracer.flush()
+        ctx.flush()
 
     if warp_idx in epilogue_warp_id:
         tracer.enter_scope("epilogue")
+        ctx.b("epilogue")
         epilog_sync_barrier = pipeline.NamedBarrier(
             barrier_id=epilog_sync_bar_id,
             num_threads=32 * len(epilogue_warp_id),
@@ -491,6 +506,7 @@ def kernel(
             subtile_cnt = cute.size(tTR_tAcc.shape, mode=[3])
             for subtile_idx in cutlass.range(subtile_cnt):
                 tracer.enter_scope("epilogue_inner")
+                ctx.b("epilogue_inner")
                 tTR_tAcc_mn = tTR_tAcc[(None, None, None, subtile_idx)]
                 cute.copy(tmem_tiled_copy, tTR_tAcc_mn, tTR_rAcc)
 
@@ -519,6 +535,7 @@ def kernel(
                 epilog_sync_barrier.arrive_and_wait()
 
                 epi_state.advance()
+                ctx.e("epilogue_inner")
                 tracer.exit_scope("epilogue_inner")
 
             with cute.arch.elect_one():
@@ -529,8 +546,10 @@ def kernel(
             work_tile = tile_sched.get_current_work()
 
         c_pipeline.producer_tail()  # cp.async.bulk.wait_group.read 0
+        ctx.e("epilogue")
         tracer.exit_scope("epilogue")
         tracer.flush()
+        ctx.flush()
 
     tmem.relinquish_alloc_permit()
     tmem.free(tmem_ptr)
@@ -551,6 +570,7 @@ def host_function(
     stream: cuda.CUstream,
     trace_out: cute.Tensor,
     trace_cfg: TraceConfig,
+    trace_ptr: cutlass.Int64,
     mma_tiler_mn: cutlass.Constexpr,
     cluster_shape_mn: cutlass.Constexpr,
     ab_stages: cutlass.Constexpr,
@@ -688,6 +708,7 @@ def host_function(
         ab_stages,
         trace_out,
         trace_cfg,
+        trace_ptr,
     ).launch(
         grid=grid_shape,
         block=(threads_per_cta, 1, 1),
@@ -706,6 +727,7 @@ def run_dense_gemm(
     normal_mean: float = 0.0,
     normal_std: float = 1.0,
     trace_path: str | None = None,
+    quack_trace_path: str | None = None,
 ):
     global torch, cutlass_torch
     import torch
@@ -777,8 +799,8 @@ def run_dense_gemm(
             #total_blocks=148,
             warps_per_block=6,
             trace_path=trace_path,
-            #enabled=True,
-            #verbose=False
+            #enabled=False,
+            #verbose=True
         )
         trace_out = trace_session.buffer
         trace_cfg = trace_session.trace_config
@@ -789,6 +811,20 @@ def run_dense_gemm(
         trace_cfg = TraceConfig(
             block_smem_bytes=64, segment_bytes=8, smem_words=1, dummy=True
         )
+
+    if quack_trace_path is not None:
+        quack_session = TraceSession(
+            quack_trace_path,
+            grid_size=148,
+            block_size=threads_per_cta,
+        )
+        quack_trace_ptr = quack_session.ptr
+    else:
+        quack_session = None
+        quack_trace_ptr = None
+    # NOTE: just comply with kernel input type
+    if quack_trace_ptr is None:
+        quack_trace_ptr = 0
 
     def generate_tensors():
         import cutlass.torch as cutlass_torch
@@ -826,6 +862,7 @@ def run_dense_gemm(
         current_stream,
         trace_out,
         trace_cfg,
+        quack_trace_ptr,
         (256, 256),
         (2, 1),
         6,
@@ -858,13 +895,16 @@ def run_dense_gemm(
 
     if not skip_ref_check:
         compiled_gemm(
-            a_tensor, b_tensor, c_tensor, current_stream, trace_out, trace_cfg
+            a_tensor, b_tensor, c_tensor, current_stream, trace_out, trace_cfg, quack_trace_ptr
         )
         compare(a_torch_cpu, b_torch_cpu, c_torch_gpu, c_dtype, tolerance)
 
     if trace_session is not None:
         trace_session.write_trace_json()
         print(f"Trace written to: {trace_session.trace_path}")
+    if quack_session is not None:
+        quack_session.write_trace(quack_trace_path)
+        print(f"Quack trace written to: {quack_trace_path}")
 
     # stop benchmarking
     return 1000
