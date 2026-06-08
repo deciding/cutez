@@ -795,12 +795,14 @@ def run_dense_gemm(
 
     if trace_path is not None:
         trace_session = CutezTraceSession(
-            sm_smem_available_bytes=1920,
-            #total_blocks=148,
+            # block_available_bytes=19200,
+            block_available_bytes=1920,
+            # total_blocks=148,
             warps_per_block=6,
             trace_path=trace_path,
-            #enabled=False,
-            #verbose=True
+            # enabled=False,
+            # verbose=True
+            # disable_smem=True,
         )
         trace_out = trace_session.buffer
         trace_cfg = trace_session.trace_config
@@ -895,7 +897,13 @@ def run_dense_gemm(
 
     if not skip_ref_check:
         compiled_gemm(
-            a_tensor, b_tensor, c_tensor, current_stream, trace_out, trace_cfg, quack_trace_ptr
+            a_tensor,
+            b_tensor,
+            c_tensor,
+            current_stream,
+            trace_out,
+            trace_cfg,
+            quack_trace_ptr,
         )
         compare(a_torch_cpu, b_torch_cpu, c_torch_gpu, c_dtype, tolerance)
 

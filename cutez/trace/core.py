@@ -140,10 +140,11 @@ class TraceConfig(ParamsBase):
     segment_bytes: int
     smem_words: int
     enabled: bool = True
+    disable_smem: bool = False
     smem_capacity_bytes: int = 0
     total_blocks: int = 2
     warps_per_block: int = 4
-    sm_smem_available_bytes: int = 0
+    block_available_bytes: int = 0
     verbose: bool = False
 
 
@@ -156,6 +157,7 @@ class CutezTracer:
     recording_block: object = None
     clock_idx: cutlass.Int32 = None
     enabled: Constexpr = const_expr(True)
+    disable_smem: Constexpr = const_expr(False)
 
     @classmethod
     def create(
@@ -173,11 +175,18 @@ class CutezTracer:
             return cls(enabled=const_expr(False))
 
         if clock_ptr is None:
-            clock_smem = smem.allocate_tensor(
-                element_type=cutlass.Uint64,
-                layout=cfg.smem_words,
-                byte_alignment=8,
-            )
+            if cfg.disable_smem:
+                clock_smem = smem.allocate_tensor(
+                    element_type=cutlass.Uint64,
+                    layout=1,
+                    byte_alignment=8,
+                )
+            else:
+                clock_smem = smem.allocate_tensor(
+                    element_type=cutlass.Uint64,
+                    layout=cfg.smem_words,
+                    byte_alignment=8,
+                )
             clock_ptr = clock_smem.iterator
         seg_addr, out_addr, is_leader, recording_block = init_clock(
             clock_ptr,
@@ -195,6 +204,7 @@ class CutezTracer:
             is_leader=is_leader,
             recording_block=recording_block,
             clock_idx=cutlass.Int32(0),
+            disable_smem=const_expr(cfg.disable_smem),
         )
 
     def _record(self, is_start: bool, scope_id):
@@ -210,6 +220,8 @@ class CutezTracer:
             self.seg_addr,
             is_leader,
             self.segment_size,
+            self.out_addr,
+            self.disable_smem,
         )
         self.clock_idx += 1
 
@@ -222,6 +234,8 @@ class CutezTracer:
     def flush(self):
         if const_expr(not self.enabled):
             return
+        if const_expr(self.disable_smem):
+            return
         recording_block = self.recording_block.ir_value()
         finanlize_clock(
             self.seg_addr,
@@ -229,6 +243,7 @@ class CutezTracer:
             self.segment_size,
             self.clock_idx,
             recording_block,
+            self.disable_smem,
         )
 
 
@@ -240,8 +255,10 @@ def clock_record(
     seg_addr: cutlass.Int32,
     is_leader_thread,
     segment_size: cutlass.Int32,
+    out_addr,
+    disable_smem: cutlass.Constexpr,
 ):
-    """Record one begin/end event into the warp-owned SMEM circular segment."""
+    """Record one begin/end event into the warp-owned trace segment."""
     clock_idx = cutlass.Int32(clock_idx)
     segment_size = cutlass.Int32(segment_size)
 
@@ -254,9 +271,7 @@ def clock_record(
     mask = llvm.ConstantOp(i32, ir.IntegerAttr.get(i32, 0x7FF)).result
     entry_size = llvm.ConstantOp(i32, ir.IntegerAttr.get(i32, 8)).result
 
-    clock_off0 = llvm.MulOp(clock_idx, entry_size, 0).result
-    clock_off = llvm.URemOp(clock_off0, segment_size).result
-    smem_addr = llvm.AddOp(seg_addr, clock_off, 0).result
+    clock_byte_off = llvm.MulOp(clock_idx, entry_size, 0).result
 
     clock_lo = llvm.inline_asm(
         i32,
@@ -287,15 +302,34 @@ def clock_record(
     clock_hi = llvm.AndOp(clock_hi, mask).result
     clock_hi = llvm.OrOp(clock_hi, scope_id).result
 
-    llvm.inline_asm(
-        None,
-        [smem_addr, clock_lo, clock_hi, is_leader_thread],
-        asm_string="@$3 st.shared.v2.b32 [$0], {$1, $2};",
-        constraints="r,r,r,b",
-        has_side_effects=True,
-        is_align_stack=False,
-        asm_dialect=llvm.AsmDialect.AD_ATT,
-    )
+    if const_expr(disable_smem):
+        i64 = ir.IntegerType.get_signless(64)
+        clock_off = llvm.URemOp(clock_byte_off, segment_size).result
+        byte_off_i64 = llvm.ZExtOp(i64, clock_off).result
+        gmem_addr = llvm.AddOp(out_addr, byte_off_i64, 0).result
+
+        llvm.inline_asm(
+            None,
+            [gmem_addr, clock_lo, clock_hi, is_leader_thread],
+            asm_string="@$3 st.global.v2.b32 [$0], {$1, $2};",
+            constraints="l,r,r,b",
+            has_side_effects=True,
+            is_align_stack=False,
+            asm_dialect=llvm.AsmDialect.AD_ATT,
+        )
+    else:
+        clock_off = llvm.URemOp(clock_byte_off, segment_size).result
+        smem_addr = llvm.AddOp(seg_addr, clock_off, 0).result
+
+        llvm.inline_asm(
+            None,
+            [smem_addr, clock_lo, clock_hi, is_leader_thread],
+            asm_string="@$3 st.shared.v2.b32 [$0], {$1, $2};",
+            constraints="r,r,r,b",
+            has_side_effects=True,
+            is_align_stack=False,
+            asm_dialect=llvm.AsmDialect.AD_ATT,
+        )
 
 
 @cute.jit
@@ -305,8 +339,11 @@ def finanlize_clock(
     segment_size: cutlass.Int32,
     num_events: cutlass.Int32,
     recording_block,
+    disable_smem: cutlass.Constexpr,
 ):
     """Flush recorded trace entries from SMEM segment to its matching GMEM segment."""
+    if const_expr(disable_smem):
+        return
     segment_size = cutlass.Int32(segment_size)
     num_events = cutlass.Int32(num_events)
 

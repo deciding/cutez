@@ -252,7 +252,7 @@ def test_installed_environment_can_import_cutez_trace_examples(tmp_path: Path):
 
 def test_session_allocates_one_segment_per_block_warp():
     session = CutezTraceSession(
-        sm_smem_available_bytes=64,
+        block_available_bytes=64,
         blocks_per_sm=2,
         total_blocks=2,
         warps_per_block=4,
@@ -269,7 +269,7 @@ def test_session_allocates_one_segment_per_block_warp():
 
 def test_session_initializes_torch_and_cute_buffer_views():
     session = CutezTraceSession(
-        sm_smem_available_bytes=32,
+        block_available_bytes=32,
         blocks_per_sm=1,
         total_blocks=1,
         warps_per_block=1,
@@ -283,7 +283,7 @@ def test_session_initializes_torch_and_cute_buffer_views():
 
 def test_session_reset_buffer_zeroes_owned_tensor():
     session = CutezTraceSession(
-        sm_smem_available_bytes=32,
+        block_available_bytes=32,
         blocks_per_sm=1,
         total_blocks=1,
         warps_per_block=1,
@@ -298,7 +298,7 @@ def test_session_reset_buffer_zeroes_owned_tensor():
 
 def test_session_decodes_flat_buffer_by_block_and_warp():
     session = CutezTraceSession(
-        sm_smem_available_bytes=64,
+        block_available_bytes=64,
         blocks_per_sm=1,
         total_blocks=1,
         warps_per_block=2,
@@ -327,7 +327,7 @@ def test_session_decodes_flat_buffer_by_block_and_warp():
 
 def test_session_write_trace_json_creates_file(tmp_path: Path):
     session = CutezTraceSession(
-        sm_smem_available_bytes=32,
+        block_available_bytes=32,
         blocks_per_sm=1,
         total_blocks=1,
         warps_per_block=1,
@@ -358,7 +358,7 @@ def test_session_write_trace_json_creates_file(tmp_path: Path):
 
 def test_session_decode_buffer_rejects_invalid_buffer_length():
     session = CutezTraceSession(
-        sm_smem_available_bytes=32,
+        block_available_bytes=32,
         blocks_per_sm=1,
         total_blocks=1,
         warps_per_block=1,
@@ -372,7 +372,7 @@ def test_session_decode_buffer_rejects_invalid_buffer_length():
 
 def test_session_decode_buffer_rejects_invalid_buffer_dtype():
     session = CutezTraceSession(
-        sm_smem_available_bytes=32,
+        block_available_bytes=32,
         blocks_per_sm=1,
         total_blocks=1,
         warps_per_block=1,

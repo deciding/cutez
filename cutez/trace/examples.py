@@ -65,7 +65,7 @@ def run_sample_trace(trace_path: str | Path, *, iters: int = 4):
     """Run the 4-warp cutez trace example and write a Chrome trace JSON artifact."""
 
     session = CutezTraceSession(
-        sm_smem_available_bytes=SM_SMEM_AVAILABLE_BYTES,
+        block_available_bytes=SM_SMEM_AVAILABLE_BYTES,
         total_blocks=TOTAL_BLOCKS,
         warps_per_block=WARPS_PER_BLOCK,
         trace_path=trace_path,

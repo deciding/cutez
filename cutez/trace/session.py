@@ -33,19 +33,20 @@ from .core import get_region_names
 class CutezTraceSession:
     warps_per_block: int
     trace_path: str | Path
-    sm_smem_available_bytes: int
+    block_available_bytes: int
     total_blocks: int = 2
     blocks_per_sm: int = 1
     region_names: dict[int, str] | None = None
     device: str | torch.device = "cuda"
     sm_clock_khz: int | None = None
     enabled: bool = True
+    disable_smem: bool = False
     verbose: bool = False
 
     def __post_init__(self):
         self.trace_path = Path(self.trace_path)
         smem_cap = get_smem_cap()
-        self.block_smem_bytes = self.sm_smem_available_bytes // self.blocks_per_sm
+        self.block_smem_bytes = self.block_available_bytes // self.blocks_per_sm
         self.segment_bytes = self.block_smem_bytes // self.warps_per_block
         if self.segment_bytes % 8 != 0:
             raise ValueError("derived segment_bytes must be divisible by 8")
@@ -58,10 +59,11 @@ class CutezTraceSession:
             segment_bytes=self.segment_bytes,
             smem_words=self.block_smem_words,
             enabled=self.enabled,
+            disable_smem=self.disable_smem,
             smem_capacity_bytes=smem_cap,
             total_blocks=self.total_blocks,
             warps_per_block=self.warps_per_block,
-            sm_smem_available_bytes=self.sm_smem_available_bytes,
+            block_available_bytes=self.block_available_bytes,
             verbose=self.verbose,
         )
         if not self.enabled:

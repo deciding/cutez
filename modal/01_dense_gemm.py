@@ -568,6 +568,7 @@ def run_dense_gemm():
             normal_mean=NORMAL_MEAN,
             normal_std=NORMAL_STD,
             trace_path=os.path.join(DUMP_DIR, "trace_dense_gemm_8.json"),
+            #trace_path=os.path.join(DUMP_DIR, "gmem_trace_dense_gemm_8.json"),
             quack_trace_path=os.path.join(DUMP_DIR, "quack_trace_dense_gemm_8.json"),
         )
 

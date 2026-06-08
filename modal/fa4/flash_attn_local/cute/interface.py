@@ -68,11 +68,11 @@ _TRACE_PATH = os.environ.get("TRACE_FA4_PATH", "/tmp/fa4_trace.json")
 if _USE_TRACE:
     _USE_SIMPLE = True  # trace requires simple mode
     _trace_session = CutezTraceSession(
-        sm_smem_available_bytes=84*8,
+        block_available_bytes=84 * 8,
         warps_per_block=4,
         trace_path=_TRACE_PATH,
-        #enabled=False,
-        #verbose=True,
+        # enabled=False,
+        # verbose=True,
     )
     _trace_out = _trace_session.buffer
     _trace_cfg = _trace_session.trace_config
@@ -675,7 +675,7 @@ def _flash_attn_fwd(
         _flash_attn_fwd.compile_cache[compile_key] = cute.compile(
             *compile_args,
             **compile_kwargs,
-            #options="--enable-tvm-ffi --opt-level 3 --ptxas-options '--verbose'",
+            # options="--enable-tvm-ffi --opt-level 3 --ptxas-options '--verbose'",
         )
 
     # In "fake mode", we will take torch fake tensors as input and the expected behaviors are:
