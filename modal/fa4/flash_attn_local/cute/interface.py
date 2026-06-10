@@ -68,11 +68,12 @@ _TRACE_PATH = os.environ.get("TRACE_FA4_PATH", "/tmp/fa4_trace.json")
 if _USE_TRACE:
     _USE_SIMPLE = True  # trace requires simple mode
     _trace_session = CutezTraceSession(
-        block_available_bytes=84 * 8,
+        #block_available_bytes=84 * 8,
+        block_available_bytes=48128, # for kv_stages = 3
         warps_per_block=4,
         trace_path=_TRACE_PATH,
-        # enabled=False,
-        # verbose=True,
+        #enabled=False,
+        #verbose=True,
     )
     _trace_out = _trace_session.buffer
     _trace_cfg = _trace_session.trace_config
