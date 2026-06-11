@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cutez"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
     "flash_attn_4==4.0.0b4",
 ]
