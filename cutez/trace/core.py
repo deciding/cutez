@@ -212,6 +212,7 @@ class CutezTracer:
         if isinstance(scope_id, str):
             scope_id = _intern_region(scope_id)
         is_leader = self.is_leader.ir_value()
+        recording_block = self.recording_block.ir_value()
         clock_record(
             is_start,
             scope_id,
@@ -221,6 +222,7 @@ class CutezTracer:
             self.segment_size,
             self.out_addr,
             self.disable_smem,
+            recording_block,
         )
         self.clock_idx += 1
 
@@ -256,6 +258,7 @@ def clock_record(
     segment_size: cutlass.Int32,
     out_addr,
     disable_smem: cutlass.Constexpr,
+    recording_block,
 ):
     """Record one begin/end event into the warp-owned trace segment."""
     clock_idx = cutlass.Int32(clock_idx)
@@ -307,9 +310,10 @@ def clock_record(
         byte_off_i64 = llvm.ZExtOp(i64, clock_off).result
         gmem_addr = llvm.AddOp(out_addr, byte_off_i64, 0).result
 
+        should_write = llvm.AndOp(recording_block, is_leader_thread).result
         llvm.inline_asm(
             None,
-            [gmem_addr, clock_lo, clock_hi, is_leader_thread],
+            [gmem_addr, clock_lo, clock_hi, should_write],
             asm_string="@$3 st.global.v2.b32 [$0], {$1, $2};",
             constraints="l,r,r,b",
             has_side_effects=True,
