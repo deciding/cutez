@@ -1,3 +1,6 @@
+# Adapted from https://github.com/Dao-AILab/quack/blob/main/quack/cute_dsl_utils.py
+# Modified by @deciding
+
 from typing import Tuple, get_origin
 from dataclasses import dataclass, fields
 

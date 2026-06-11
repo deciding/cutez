@@ -1,3 +1,6 @@
+# Adapted from https://github.com/Dao-AILab/flash-attention/blob/main/flash_attn/cute/flash_fwd_sm100.py
+# Modified by @deciding
+
 # Supported features:
 # - BF16 & FP16 dtype
 # - noncausal & causal attention
