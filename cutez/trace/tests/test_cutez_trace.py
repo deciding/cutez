@@ -255,7 +255,7 @@ def test_session_allocates_one_segment_per_block_warp():
         block_available_bytes=64,
         blocks_per_sm=2,
         total_blocks=2,
-        warps_per_block=4,
+        segments_per_block=4,
         trace_path="trace.json",
     )
 
@@ -272,7 +272,7 @@ def test_session_initializes_torch_and_cute_buffer_views():
         block_available_bytes=32,
         blocks_per_sm=1,
         total_blocks=1,
-        warps_per_block=1,
+        segments_per_block=1,
         trace_path="trace.json",
     )
 
@@ -286,7 +286,7 @@ def test_session_reset_buffer_zeroes_owned_tensor():
         block_available_bytes=32,
         blocks_per_sm=1,
         total_blocks=1,
-        warps_per_block=1,
+        segments_per_block=1,
         trace_path="trace.json",
     )
 
@@ -301,7 +301,7 @@ def test_session_decodes_flat_buffer_by_block_and_warp():
         block_available_bytes=64,
         blocks_per_sm=1,
         total_blocks=1,
-        warps_per_block=2,
+        segments_per_block=2,
         trace_path="trace.json",
     )
     words = torch.tensor(
@@ -330,7 +330,7 @@ def test_session_write_trace_json_creates_file(tmp_path: Path):
         block_available_bytes=32,
         blocks_per_sm=1,
         total_blocks=1,
-        warps_per_block=1,
+        segments_per_block=1,
         trace_path=tmp_path / "trace.json",
         region_names={9: "epilogue"},
         sm_clock_khz=500_000,
@@ -361,7 +361,7 @@ def test_session_decode_buffer_rejects_invalid_buffer_length():
         block_available_bytes=32,
         blocks_per_sm=1,
         total_blocks=1,
-        warps_per_block=1,
+        segments_per_block=1,
         trace_path="trace.json",
     )
     words = torch.zeros(session.buffer_numel - 1, dtype=torch.int64)
@@ -375,7 +375,7 @@ def test_session_decode_buffer_rejects_invalid_buffer_dtype():
         block_available_bytes=32,
         blocks_per_sm=1,
         total_blocks=1,
-        warps_per_block=1,
+        segments_per_block=1,
         trace_path="trace.json",
     )
     words = torch.zeros(session.buffer_numel, dtype=torch.int32)

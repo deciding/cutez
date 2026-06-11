@@ -548,6 +548,8 @@ def run_fa4_benchmark(use_simple: bool = False, use_trace: bool = False):
     generate_htmls(DUMP_DIR, "/workspace/fa4/flash_attn_local/cute/flash_fwd_sm100.py")
     print("HTML generation complete!")
 
+    if use_trace:
+        print(f"Download trace with: modal volume get {VOLUME_NAME} fa4_trace.json")
     print("Done!")
     print(f"to download and view: modal volume get {VOLUME_NAME} {dump_name}")
 

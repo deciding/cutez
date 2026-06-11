@@ -80,7 +80,7 @@ cutlass_image = (
     .add_local_dir(
         root_dir.parent / "cutez",
         remote_path="/workspace/cutez",
-        #copy=True,
+        # copy=True,
     )
 )
 
@@ -556,6 +556,7 @@ def run_dense_gemm():
         from cuteDSL.blackwell.dense_gemm_8_tracer import (
             run_dense_gemm,
         )
+
         os.environ["QUACK_TRACE"] = "0"
 
         run_dense_gemm(
@@ -568,8 +569,11 @@ def run_dense_gemm():
             normal_mean=NORMAL_MEAN,
             normal_std=NORMAL_STD,
             trace_path=os.path.join(DUMP_DIR, "trace_dense_gemm_8.json"),
-            #trace_path=os.path.join(DUMP_DIR, "gmem_trace_dense_gemm_8.json"),
+            # trace_path=os.path.join(DUMP_DIR, "gmem_trace_dense_gemm_8.json"),
             quack_trace_path=os.path.join(DUMP_DIR, "quack_trace_dense_gemm_8.json"),
+        )
+        print(
+            f"Download trace with: modal volume get {VOLUME_NAME} {dump_name}/trace_dense_gemm_8.json"
         )
 
     print(f"\nDone! Results saved to: {DUMP_DIR}")

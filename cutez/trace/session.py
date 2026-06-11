@@ -31,7 +31,7 @@ from .core import get_region_names
 
 @dataclass
 class CutezTraceSession:
-    warps_per_block: int
+    segments_per_block: int
     trace_path: str | Path
     block_available_bytes: int
     total_blocks: int = 2
@@ -47,12 +47,12 @@ class CutezTraceSession:
         self.trace_path = Path(self.trace_path)
         smem_cap = get_smem_cap()
         self.block_smem_bytes = self.block_available_bytes // self.blocks_per_sm
-        self.segment_bytes = self.block_smem_bytes // self.warps_per_block
-        if self.segment_bytes % 8 != 0:
-            raise ValueError("derived segment_bytes must be divisible by 8")
+        align = self.segments_per_block * 8
+        self.block_smem_bytes = (self.block_smem_bytes // align) * align
+        self.segment_bytes = self.block_smem_bytes // self.segments_per_block
         self.segment_words = self.segment_bytes // 8
         self.block_smem_words = self.block_smem_bytes // 8
-        self.total_segments = self.total_blocks * self.warps_per_block
+        self.total_segments = self.total_blocks * self.segments_per_block
         self.buffer_numel = self.block_smem_words * self.total_blocks
         self.trace_config = TraceConfig(
             block_smem_bytes=self.block_smem_bytes,
@@ -62,7 +62,7 @@ class CutezTraceSession:
             disable_smem=self.disable_smem,
             smem_capacity_bytes=smem_cap,
             total_blocks=self.total_blocks,
-            warps_per_block=self.warps_per_block,
+            segments_per_block=self.segments_per_block,
             block_available_bytes=self.block_available_bytes,
             verbose=self.verbose,
         )
@@ -135,8 +135,8 @@ class CutezTraceSession:
         flat = words.detach().cpu().reshape(-1).tolist()
         out = {}
         for block in range(self.total_blocks):
-            for warp in range(self.warps_per_block):
-                segment = block * self.warps_per_block + warp
+            for warp in range(self.segments_per_block):
+                segment = block * self.segments_per_block + warp
                 start = segment * self.segment_words
                 stop = start + self.segment_words
                 out[(block, warp)] = decode_ring_events(
@@ -187,7 +187,7 @@ class CutezTraceSession:
         decoded = self.decode_buffer(words)
         debug = {}
         for block in range(self.total_blocks):
-            for warp in range(self.warps_per_block):
+            for warp in range(self.segments_per_block):
                 events = decoded[(block, warp)]
                 paired = pair_complete_events(events, region_names=self.region_names)
                 debug[(block, warp)] = {

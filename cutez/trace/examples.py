@@ -67,7 +67,7 @@ def run_sample_trace(trace_path: str | Path, *, iters: int = 4):
     session = CutezTraceSession(
         block_available_bytes=SM_SMEM_AVAILABLE_BYTES,
         total_blocks=TOTAL_BLOCKS,
-        warps_per_block=WARPS_PER_BLOCK,
+        segments_per_block=WARPS_PER_BLOCK,
         trace_path=trace_path,
         dummy=False,
     )

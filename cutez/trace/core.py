@@ -54,11 +54,10 @@ def debug_smem_usage(smem_capacity_bytes: cutlass.Int32):
     dyn = cute.arch.get_dyn_smem_size()
     bdx, bdy, bdz = cute.arch.block_dim()
     gdx, gdy, gdz = cute.arch.grid_dim()
-    base_align = cutlass.Int32(1024)
     if tidx == 0 and bidx == 0 and bidy == 0 and bidz == 0:
         num_warps = bdx * bdy * bdz // 32
         grid_total = gdx * gdy * gdz
-        available = smem_capacity_bytes - base_align - dyn
+        available = smem_capacity_bytes - dyn
         cute.printf("dyn_smem_bytes=%d", dyn)
         cute.printf("capacity_bytes=%d", smem_capacity_bytes)
         cute.printf("available_bytes=%d", available)
@@ -143,7 +142,7 @@ class TraceConfig(ParamsBase):
     disable_smem: bool = False
     smem_capacity_bytes: int = 0
     total_blocks: int = 2
-    warps_per_block: int = 4
+    segments_per_block: int = 4
     block_available_bytes: int = 0
     verbose: bool = False
 

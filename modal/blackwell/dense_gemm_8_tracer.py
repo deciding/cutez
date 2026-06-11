@@ -796,9 +796,9 @@ def run_dense_gemm(
     if trace_path is not None:
         trace_session = CutezTraceSession(
             # block_available_bytes=19200,
-            block_available_bytes=1920,
+            block_available_bytes=2944,
             # total_blocks=148,
-            warps_per_block=6,
+            segments_per_block=6,
             trace_path=trace_path,
             # enabled=False,
             # verbose=True
