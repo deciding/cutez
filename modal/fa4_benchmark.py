@@ -28,12 +28,15 @@ fa4_image = (
 
 fa4_image = (
     fa4_image.pip_install("torch", "pytest", "einops")
-    .pip_install("nvidia-cutlass-dsl>=4.4.1")
-    .pip_install("quack-kernels>=0.2.10")
+    #.pip_install("nvidia-cutlass-dsl>=4.4.1")
+    .pip_install("nvidia-cutlass-dsl==4.6.0.dev0")
     .pip_install("apache-tvm-ffi>=0.1.5,<0.2")
     .pip_install("torch-c-dlpack-ext")
     .pip_install("triton==3.5.1")
-    .pip_install("flash-attn-4==4.0.0b4")
+    #.pip_install("quack-kernels>=0.2.10")
+    #.pip_install("flash-attn-4==4.0.0b4")
+    .pip_install("flash-attn-4>=4.0.0b16")
+    .pip_install("quack-kernels>=0.5.0")
     .pip_install("teraxlang==3.5.1.dev4")
     .add_local_dir(root_dir / "fa4", remote_path="/workspace/fa4")
     .add_local_dir(
@@ -49,7 +52,11 @@ fa4_image = (
     timeout=600,
     volumes={"/workspace/dump": volume},
 )
-def run_fa4_benchmark(use_simple: bool = False, use_trace: bool = False):
+def run_fa4_benchmark(
+    use_simple: bool = False,
+    use_trace: bool = False,
+    use_iket: bool = False,
+):
     import torch
     import sys
     import math
@@ -118,6 +125,9 @@ def run_fa4_benchmark(use_simple: bool = False, use_trace: bool = False):
         use_simple = True
         os.environ["USE_TRACE_FA4"] = "1"
         os.environ["TRACE_FA4_PATH"] = "/workspace/dump/fa4_trace.json"
+    if use_iket:
+        use_simple = True
+        os.environ["USE_IKET_FA4"] = "1"
         print("USE_TRACE_FA4")
     if use_simple:
         os.environ["USE_SIMPLE_FA4"] = "1"
@@ -545,7 +555,8 @@ def run_fa4_benchmark(use_simple: bool = False, use_trace: bool = False):
     from teraxlang.tools import generate_htmls
 
     print("\nGenerating HTML viewers for PTX files...")
-    generate_htmls(DUMP_DIR, "/workspace/fa4/flash_attn_local/cute/flash_fwd_sm100.py")
+    #generate_htmls(DUMP_DIR, "/workspace/fa4/flash_attn_local/cute/flash_fwd_sm100.py")
+    generate_htmls(DUMP_DIR, "/workspace/fa4/flash_attn_local/cute/flash_fwd_sm100_trace.py")
     print("HTML generation complete!")
 
     if use_trace:
@@ -555,5 +566,5 @@ def run_fa4_benchmark(use_simple: bool = False, use_trace: bool = False):
 
 
 @app.local_entrypoint()
-def main(use_simple: bool = True, use_trace: bool = True):
-    run_fa4_benchmark.remote(use_simple=use_simple, use_trace=use_trace)
+def main(use_simple: bool = True, use_trace: bool = True, use_iket: bool = True):
+    run_fa4_benchmark.remote(use_simple=use_simple, use_trace=use_trace, use_iket=use_iket)

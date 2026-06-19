@@ -35,22 +35,35 @@ from cutlass.cutlass_dsl import BaseDSL
 
 from quack import copy_utils, layout_utils
 
-from flash_attn.cute.cute_dsl_utils import assume_tensor_aligned
-import flash_attn.cute.pipeline as pipeline_custom
-from flash_attn.cute.softmax import SoftmaxSm100
-from flash_attn.cute.seqlen_info import SeqlenInfoQK
-from flash_attn.cute.block_info import BlockInfo
-from flash_attn.cute import mma_sm100_desc as sm100_desc
-from flash_attn.cute import blackwell_helpers as sm100_utils
-from quack.cute_dsl_utils import ParamsBase
-from flash_attn.cute.tile_scheduler import (
+from .cute_dsl_utils import assume_tensor_aligned
+from . import pipeline as pipeline_custom
+from .softmax import SoftmaxSm100
+from .seqlen_info import SeqlenInfoQK
+from .block_info import BlockInfo
+from . import mma_sm100_desc as sm100_desc
+from . import blackwell_helpers as sm100_utils
+from cutez._params_base import ParamsBase
+from .tile_scheduler import (
     TileSchedulerArguments,
     StaticPersistentTileScheduler,
     SingleTileLPTScheduler,
 )
+from cutlass.cute.experimental import iket
 from cutlass.cute.nvgpu.tcgen05 import make_smem_layout_atom
 
 from cutez.trace.core import CutezTracer, TraceConfig
+
+
+@cute.jit
+def iket_push_if_enabled(enabled: cutlass.Constexpr, name: cutlass.Constexpr):
+    if const_expr(enabled):
+        iket.range_push(name)
+
+
+@cute.jit
+def iket_pop_if_enabled(enabled: cutlass.Constexpr):
+    if const_expr(enabled):
+        iket.range_pop()
 
 
 class NamedBarrierFwd(enum.IntEnum):
@@ -215,6 +228,7 @@ class FlashAttentionForwardSm100Simple:
 
         self.trace_out = None
         self.trace_cfg = None
+        self.use_iket = False
 
     def _setup_attributes(self):
         """Set up configurations and parameters for the FMHA kernel operation.
@@ -255,7 +269,7 @@ class FlashAttentionForwardSm100Simple:
             max(smem_size_k_per_stage, smem_size_v_per_stage) // self.cta_group_size
         )
         kv_stage = (224 * 1024 - smem_size_q_o) // smem_size_kv_per_stage
-        self.kv_stage = kv_stage-3
+        self.kv_stage = kv_stage - 3
         # print("kv_stage", self.kv_stage)
         self.s_stage = 2
         assert self.s_stage >= self.q_stage
@@ -527,31 +541,43 @@ class FlashAttentionForwardSm100Simple:
         @cute.struct
         class SharedStorage:
             # m_barriers for pipelines
-            mbar_load_Q: cute.struct.MemRange[Int64, self.q_stage * 2] # 8*2*2 = 32
-            mbar_load_KV: cute.struct.MemRange[Int64, self.kv_stage * 2] # 8*6*2 = 96, 128
-            mbar_S_full_P_full_O_rescaled: cute.struct.MemRange[Int64, self.q_stage * 2] # 8*2*2 = 32, 160
-            mbar_P_full_lastsplit: cute.struct.MemRange[Int64, self.q_stage * 2] # 8*2*2 = 32, 192
-            mbar_O_full: cute.struct.MemRange[Int64, self.q_stage * 2] # 32, 224
-            mbar_softmax_stats: cute.struct.MemRange[Int64, self.q_stage * 2] # 32, 256
+            mbar_load_Q: cute.struct.MemRange[Int64, self.q_stage * 2]  # 8*2*2 = 32
+            mbar_load_KV: cute.struct.MemRange[
+                Int64, self.kv_stage * 2
+            ]  # 8*6*2 = 96, 128
+            mbar_S_full_P_full_O_rescaled: cute.struct.MemRange[
+                Int64, self.q_stage * 2
+            ]  # 8*2*2 = 32, 160
+            mbar_P_full_lastsplit: cute.struct.MemRange[
+                Int64, self.q_stage * 2
+            ]  # 8*2*2 = 32, 192
+            mbar_O_full: cute.struct.MemRange[Int64, self.q_stage * 2]  # 32, 224
+            mbar_softmax_stats: cute.struct.MemRange[Int64, self.q_stage * 2]  # 32, 256
             # mbar_softmax_stats: cute.struct.MemRange[Int64, self.q_stage * 4 * 2]
-            mbar_O_epi: cute.struct.MemRange[Int64, self.q_stage * 2] # 32, 288
-            mbar_s0_s1_sequence: cute.struct.MemRange[Int64, 2 * 2] # 32, 320
+            mbar_O_epi: cute.struct.MemRange[Int64, self.q_stage * 2]  # 32, 288
+            mbar_s0_s1_sequence: cute.struct.MemRange[Int64, 2 * 2]  # 32, 320
             # Tmem dealloc cluster barrier
-            tmem_dealloc_mbar_ptr: Int64 # 8, 328
+            tmem_dealloc_mbar_ptr: Int64  # 8, 328
             # Tmem holding buffer
-            tmem_holding_buf: Int32 # 4, 332
+            tmem_holding_buf: Int32  # 4, 332
             # Smem tensors
-            trace_buf : cute.struct.MemRange[Int64, 86]
+            trace_buf: cute.struct.MemRange[Int64, 86]
             # store row max and row sum
-            sScale: cute.struct.MemRange[Float32, self.q_stage * self.m_block_size * 2] # 4*2*128*2=2048, 2380
+            sScale: cute.struct.MemRange[
+                Float32, self.q_stage * self.m_block_size * 2
+            ]  # 4*2*128*2=2048, 2380
             sO: cute.struct.Align[
-                cute.struct.MemRange[self.o_dtype, sO_size], self.buffer_align_bytes # 2*32k=64k, 63k
+                cute.struct.MemRange[self.o_dtype, sO_size],
+                self.buffer_align_bytes,  # 2*32k=64k, 63k
             ]
             sQ: cute.struct.Align[
-                cute.struct.MemRange[self.q_dtype, sQ_size], self.buffer_align_bytes # 2*32k=64k, 131k
+                cute.struct.MemRange[self.q_dtype, sQ_size],
+                self.buffer_align_bytes,  # 2*32k=64k, 131k
             ]
             sK: cute.struct.Align[
-                cute.struct.MemRange[self.k_dtype, cute.cosize(sK_layout)], # 2*48k=96k = 227k
+                cute.struct.MemRange[
+                    self.k_dtype, cute.cosize(sK_layout)
+                ],  # 2*48k=96k = 227k
                 self.buffer_align_bytes,
             ]
 
@@ -676,8 +702,11 @@ class FlashAttentionForwardSm100Simple:
 
         tracer = CutezTracer.create(
             # No need to squeeze trace_buf
-            #trace_out, clock_ptr=storage.trace_buf.data_ptr(), seg_idx=warp_idx//4, smem=smem, cfg=self.trace_cfg
-            trace_out, seg_idx=warp_idx//4, smem=smem, cfg=self.trace_cfg
+            # trace_out, clock_ptr=storage.trace_buf.data_ptr(), seg_idx=warp_idx//4, smem=smem, cfg=self.trace_cfg
+            trace_out,
+            seg_idx=warp_idx // 4,
+            smem=smem,
+            cfg=self.trace_cfg,
         )
 
         tmem_alloc_barrier = pipeline.NamedBarrier(
@@ -908,6 +937,7 @@ class FlashAttentionForwardSm100Simple:
         #  MMA
         # ///////////////////////////////////////////////////////////////////////////////
         if warp_idx == self.mma_warp_id:
+            iket_push_if_enabled(self.use_iket, "mma")
             tracer.enter_scope("mma")
             cute.arch.setmaxregister_decrease(self.num_regs_other)
             # Alloc tensor memory buffer
@@ -933,12 +963,13 @@ class FlashAttentionForwardSm100Simple:
                 num_splits,
                 SeqlenInfoCls,
                 TileSchedulerCls,
-                tracer
+                tracer,
             )
             # Dealloc the tensor memory buffer
             tmem.relinquish_alloc_permit()
             tmem.free(tmem_ptr)
             tracer.exit_scope("mma")
+            iket_pop_if_enabled(self.use_iket)
             tracer.flush()
 
         # ///////////////////////////////////////////////////////////////////////////////
@@ -965,6 +996,7 @@ class FlashAttentionForwardSm100Simple:
         #  Softmax
         # ///////////////////////////////////////////////////////////////////////////////
         if warp_idx <= self.softmax1_warp_ids[-1]:
+            iket_push_if_enabled(self.use_iket, "softmax")
             tracer.enter_scope("softmax")
             # increase register after decreasing
             cute.arch.setmaxregister_increase(self.num_regs_softmax)
@@ -993,12 +1025,14 @@ class FlashAttentionForwardSm100Simple:
             stage = Int32(0 if warp_idx < self.softmax1_warp_ids[0] else 1)
             softmax_loop(stage=stage, tStS=tStS)
             tracer.exit_scope("softmax")
+            iket_pop_if_enabled(self.use_iket)
             tracer.flush()
 
         # ///////////////////////////////////////////////////////////////////////////////
         #  Correction
         # ///////////////////////////////////////////////////////////////////////////////
         if warp_idx >= self.correction_warp_ids[0] and warp_idx < self.mma_warp_id:
+            iket_push_if_enabled(self.use_iket, "correction")
             tracer.enter_scope("correction")
             cute.arch.setmaxregister_decrease(self.num_regs_correction)
             # sync with mma warp before retrieving tmem ptr
@@ -1024,9 +1058,10 @@ class FlashAttentionForwardSm100Simple:
                 num_splits,
                 SeqlenInfoCls,
                 TileSchedulerCls,
-                tracer
+                tracer,
             )
             tracer.exit_scope("correction")
+            iket_pop_if_enabled(self.use_iket)
             tracer.flush()
 
         return
@@ -1220,7 +1255,7 @@ class FlashAttentionForwardSm100Simple:
         num_splits: Int32,
         SeqlenInfoCls: Callable,
         TileSchedulerCls: Callable,
-        tracer: CutezTracer
+        tracer: CutezTracer,
     ):
         tSrQ = tiled_mma_qk.make_fragment_A(sQ)
         tSrK = tiled_mma_qk.make_fragment_B(sK)
@@ -1334,6 +1369,7 @@ class FlashAttentionForwardSm100Simple:
             block_iter_count = n_block_max - n_block_min
 
             if is_leader_cta:
+                iket_push_if_enabled(self.use_iket, "2gemm_Si")
                 tracer.enter_scope("2gemm_Si")
                 for stage in cutlass.range_constexpr(self.q_stage):
                     # GEMM_QK00 (Q0 * K0 -> S0) or GEMM_QK01 (Q1 * K0 -> S1)
@@ -1364,6 +1400,7 @@ class FlashAttentionForwardSm100Simple:
                     # 4. release S0 / S1
                     pipeline_s_p_o.producer_commit_w_index(stage)  # q_stages
                 tracer.exit_scope("2gemm_Si")
+                iket_pop_if_enabled(self.use_iket)
                 mma_q_consumer_phase ^= 1
                 # 5. release K0
                 pipeline_kv.consumer_release(mma_kv_consumer_state)
@@ -1379,9 +1416,11 @@ class FlashAttentionForwardSm100Simple:
                 for i in cutlass.range(block_loop_count, unroll=1):
                     # GEMM_PV00 (P0 * V0 -> O0_partial), O0 needs to be accumulated in the seqlen_kv loop
                     # 1. wait for V0
+                    iket_push_if_enabled(self.use_iket, "wait_V")
                     tracer.enter_scope("wait_V")
                     pipeline_kv.consumer_wait(mma_kv_consumer_state)
                     tracer.exit_scope("wait_V")
+                    iket_pop_if_enabled(self.use_iket)
                     mma_kv_release_state = mma_kv_consumer_state.clone()
                     Vi_index, Vi_phase = (
                         mma_kv_consumer_state.index,
@@ -1394,23 +1433,29 @@ class FlashAttentionForwardSm100Simple:
                         # means that the correction warps has finished reading tO during
                         # the last iteration of the previous work tile.
                         if stage == 0:
+                            iket_push_if_enabled(self.use_iket, "wait_P0")
                             tracer.enter_scope("wait_P0")
                         else:
+                            iket_push_if_enabled(self.use_iket, "wait_P1")
                             tracer.enter_scope("wait_P1")
                         pipeline_s_p_o.producer_acquire_w_index_phase(  # P is ready
                             stage, P_full_O_rescaled_phase
                         )
                         if stage == 0:
                             tracer.exit_scope("wait_P0")
+                            iket_pop_if_enabled(self.use_iket)
                         else:
                             tracer.exit_scope("wait_P1")
+                            iket_pop_if_enabled(self.use_iket)
                         # 3. gemm
                         # sm100_utils.gemm(tiled_mma_pv, tOtO0, tOrP0, tOrVi, zero_init=True)
                         # gemm_Pi[stage](tCrB=tOrVi, sB=sV[None, None, None, Vi_index], zero_init=not O_should_accumulate)
                         sV_cur = sV[None, None, None, Vi_index]  # smem V
                         if stage == 0:
+                            iket_push_if_enabled(self.use_iket, "gemm_Pi0")
                             tracer.enter_scope("gemm_Pi0")
                         else:
+                            iket_push_if_enabled(self.use_iket, "gemm_Pi1")
                             tracer.enter_scope("gemm_Pi1")
                         gemm_Pi[stage](
                             # tCrA = tOrP, acc = tmem_o_offset
@@ -1427,8 +1472,10 @@ class FlashAttentionForwardSm100Simple:
                         )
                         if stage == 0:
                             tracer.exit_scope("gemm_Pi0")
+                            iket_pop_if_enabled(self.use_iket)
                         else:
                             tracer.exit_scope("gemm_Pi1")
+                            iket_pop_if_enabled(self.use_iket)
                         # Don't need to signal O_full to the correction warps since the
                         # correction warps wait for the softmax warps anyway. By the time the softmax
                         # warps finished, S_i for the next iteration must have been done, so O_i-1
@@ -1443,16 +1490,20 @@ class FlashAttentionForwardSm100Simple:
                         # GEMM_QK0i (Q0 * Ki -> S0)
                         # 1. wait for Ki
                         if stage == 0:
+                            iket_push_if_enabled(self.use_iket, "wait_K0")
                             tracer.enter_scope("wait_K0")
                         else:
+                            iket_push_if_enabled(self.use_iket, "wait_K1")
                             tracer.enter_scope("wait_K1")
                         if const_expr(stage == 0):
                             mma_kv_consumer_state.advance()
                             pipeline_kv.consumer_wait(mma_kv_consumer_state)
                         if stage == 0:
                             tracer.exit_scope("wait_K0")
+                            iket_pop_if_enabled(self.use_iket)
                         else:
                             tracer.exit_scope("wait_K1")
+                            iket_pop_if_enabled(self.use_iket)
                         Ki_index, Ki_phase = (
                             mma_kv_consumer_state.index,
                             mma_kv_consumer_state.phase,
@@ -1465,8 +1516,10 @@ class FlashAttentionForwardSm100Simple:
                         sK_cur = sK[None, None, None, Ki_index]
                         # gemm_Si[stage](tCrB=tSrK[None, None, None, Ki_index], sB=sK_cur)
                         if stage == 0:
+                            iket_push_if_enabled(self.use_iket, "gemm_Si0")
                             tracer.enter_scope("gemm_Si0")
                         else:
+                            iket_push_if_enabled(self.use_iket, "gemm_Si1")
                             tracer.enter_scope("gemm_Si1")
                         gemm_Si[stage](
                             smem_desc_start_b=sm100_desc.make_smem_desc_start_addr(
@@ -1475,8 +1528,10 @@ class FlashAttentionForwardSm100Simple:
                         )
                         if stage == 0:
                             tracer.exit_scope("gemm_Si0")
+                            iket_pop_if_enabled(self.use_iket)
                         else:
                             tracer.exit_scope("gemm_Si1")
+                            iket_pop_if_enabled(self.use_iket)
                         # gemm_Si[stage](tCrB=tSrK[None, None, None, Ki_index])
                         # 3. release S0 / S1
                         pipeline_s_p_o.producer_commit_w_index(stage)
@@ -1501,6 +1556,7 @@ class FlashAttentionForwardSm100Simple:
                     mma_kv_consumer_state.phase,
                 )
                 tOrVi = tOrV[None, None, None, Vi_index]
+                iket_push_if_enabled(self.use_iket, "2gemm_Pi")
                 tracer.enter_scope("2gemm_Pi")
                 for stage in cutlass.range_constexpr(self.q_stage):
                     # 2. acquire corrected Oi_partial and Pi
@@ -1531,6 +1587,7 @@ class FlashAttentionForwardSm100Simple:
                     pipeline_o_acc.producer_commit_w_index(stage)
                     # End of GEMM_PV00 (P0 * V0 -> O0_partial)
                 tracer.exit_scope("2gemm_Pi")
+                iket_pop_if_enabled(self.use_iket)
                 P_full_O_rescaled_phase ^= 1
                 # 5. release Vi_end
                 pipeline_kv.consumer_release(mma_kv_consumer_state)
@@ -1567,7 +1624,7 @@ class FlashAttentionForwardSm100Simple:
         SeqlenInfoCls: Callable,
         TileSchedulerCls: Callable,
         head_divmod=None,
-        tracer: CutezTracer=None,
+        tracer: CutezTracer = None,
     ):
         """Compute softmax on attention scores from QK matrix multiplication.
 
@@ -1683,11 +1740,13 @@ class FlashAttentionForwardSm100Simple:
                 tracer=tracer,
             )
 
-            tracer.enter_scope('wait_S')
+            iket_push_if_enabled(self.use_iket, "wait_S")
+            tracer.enter_scope("wait_S")
             pipeline_sm_stats.producer_acquire_w_index_phase(
                 stage, sm_stats_producer_phase
             )
-            tracer.exit_scope('wait_S')
+            tracer.exit_scope("wait_S")
+            iket_pop_if_enabled(self.use_iket)
             sm_stats_producer_phase ^= 1
 
             (
@@ -1718,7 +1777,8 @@ class FlashAttentionForwardSm100Simple:
             ):
                 n_block = n_block_max - n_tile - 1
                 # mask_mod is always None in simple_7
-                tracer.enter_scope('softmax_step')
+                iket_push_if_enabled(self.use_iket, "softmax_step")
+                tracer.enter_scope("softmax_step")
                 (
                     mma_si_consumer_phase,
                     sm_stats_producer_phase,
@@ -1729,7 +1789,8 @@ class FlashAttentionForwardSm100Simple:
                     s0_s1_sequence_phase,
                     n_block,
                 )
-                tracer.exit_scope('softmax_step')
+                tracer.exit_scope("softmax_step")
+                iket_pop_if_enabled(self.use_iket)
             # is_local is always False, so skip local mask handling
             # Dense path always writes scale / signals
             # 2 x q_stage x m_block_size
@@ -1797,7 +1858,7 @@ class FlashAttentionForwardSm100Simple:
         head_divmod=None,
         mask_fn: Optional[Callable] = None,
         is_first: bool = False,
-        tracer: CutezTracer=None,
+        tracer: CutezTracer = None,
     ) -> Tuple[cute.Int32, cute.Int32, cute.Int32]:
         """Perform a single step of the softmax computation on a block of attention scores.
 
@@ -1834,21 +1895,26 @@ class FlashAttentionForwardSm100Simple:
         tScP_shape = (tScS_shape[0], tilePlikeFP32)  # (128, 64)
 
         # Wait for Si
-        tracer.enter_scope('wait_S')
+        iket_push_if_enabled(self.use_iket, "wait_S")
+        tracer.enter_scope("wait_S")
         pipeline_s_p_o.consumer_wait_w_index_phase(stage, mma_si_consumer_phase)
         tSrS_t2r = cute.make_fragment(
             thr_tmem_load.partition_D(tScS).shape, self.qk_acc_dtype
         )
-        tracer.exit_scope('wait_S')
+        tracer.exit_scope("wait_S")
+        iket_pop_if_enabled(self.use_iket)
         # (((32,32),1),1,4) -> ((32,1),1,4)
-        tracer.enter_scope('load_tS')
+        iket_push_if_enabled(self.use_iket, "load_tS")
+        tracer.enter_scope("load_tS")
         cute.copy(thr_tmem_load, tStS_t2r, tSrS_t2r)
-        tracer.exit_scope('load_tS')
+        tracer.exit_scope("load_tS")
+        iket_pop_if_enabled(self.use_iket)
         # score_mod is always None in simple_6, skip apply_score_mod
 
         if const_expr(mask_fn is not None):
             mask_fn(tSrS_t2r, n_block=n_block)
-        tracer.enter_scope('update_scale_subtract_rowmax')
+        iket_push_if_enabled(self.use_iket, "update_scale_subtract_rowmax")
+        tracer.enter_scope("update_scale_subtract_rowmax")
         row_max, acc_scale = softmax.update_row_max(tSrS_t2r.load(), is_first)
 
         if const_expr(not is_first):
@@ -1865,7 +1931,8 @@ class FlashAttentionForwardSm100Simple:
 
         # if thread_idx == 0 and stage == 0: cute.print_tensor(tSrS_t2r)
         softmax.scale_subtract_rowmax(tSrS_t2r, row_max)
-        tracer.exit_scope('update_scale_subtract_rowmax')
+        tracer.exit_scope("update_scale_subtract_rowmax")
+        iket_pop_if_enabled(self.use_iket)
         tSrP_r2t_f32 = cute.make_fragment(
             thr_tmem_store.partition_S(cute.make_identity_tensor(tScP_shape)).shape,
             Float32,
@@ -1874,22 +1941,26 @@ class FlashAttentionForwardSm100Simple:
             cute.recast_ptr(tSrP_r2t_f32.iterator, dtype=self.q_dtype), tSrS_t2r.layout
         )  # ((32, 1), 1, 4)
         # softmax.scale_apply_exp2_convert(tSrS_t2r, row_max, tSrP_r2t)
-        tracer.enter_scope('apply_exp2_convert')
+        iket_push_if_enabled(self.use_iket, "apply_exp2_convert")
+        tracer.enter_scope("apply_exp2_convert")
         softmax.apply_exp2_convert(
             tSrS_t2r,  # ((32, 1), 1, 4)
             tSrP_r2t,  # ((32, 1), 1, 4)
             ex2_emu_freq=self.ex2_emu_freq if const_expr(mask_fn is None) else 0,
             ex2_emu_start_frg=self.ex2_emu_start_frg,
         )
-        tracer.exit_scope('apply_exp2_convert')
+        tracer.exit_scope("apply_exp2_convert")
+        iket_pop_if_enabled(self.use_iket)
         # print(tSrP_r2t_f32, tStP_r2t)
         # cute.copy(thr_tmem_store, tSrP_r2t_f32, tStP_r2t)
         for i in cutlass.range_constexpr(cute.size(tStP_r2t.shape[2])):
-            tracer.enter_scope('tP_store')
+            iket_push_if_enabled(self.use_iket, "tP_store")
+            tracer.enter_scope("tP_store")
             cute.copy(
                 thr_tmem_store, tSrP_r2t_f32[None, None, i], tStP_r2t[None, None, i]
             )
-            tracer.exit_scope('tP_store')
+            tracer.exit_scope("tP_store")
+            iket_pop_if_enabled(self.use_iket)
             if const_expr(self.split_P_arrive > 0):
                 split_P_arrive_idx = (
                     cute.size(tStP_r2t.shape[2])
@@ -2023,7 +2094,8 @@ class FlashAttentionForwardSm100Simple:
 
                 tSrScale_t2r = cute.make_fragment(tSrScale_t2r_shape, Float32)
                 for i in cutlass.range(total_block_count - 1, unroll=1):
-                    tracer.enter_scope('wait_and_correct')
+                    iket_push_if_enabled(self.use_iket, "wait_and_correct")
+                    tracer.enter_scope("wait_and_correct")
                     for stage in cutlass.range_constexpr(self.q_stage):
                         # wait for S0 / S1
                         # pipeline_sm_stats.consumer_wait_w_index_phase(stage, sm_stats_consumer_phase)
@@ -2041,24 +2113,28 @@ class FlashAttentionForwardSm100Simple:
                         # Don't need O_full anymore, since by the time softmax has signaled the correction
                         # warps, S_i must have been done, so O_i-1 must have been done as well.
                         # pipeline_o_acc.consumer_wait_w_index_phase(stage, o_corr_consumer_phase)
-                        tracer.enter_scope('correction_rescale')
+                        iket_push_if_enabled(self.use_iket, "correction_rescale")
+                        tracer.enter_scope("correction_rescale")
                         if should_rescale:
                             self.correction_rescale(
                                 thr_mma_pv, tOtO[None, None, None, stage], tidx, scale
                             )
-                        tracer.exit_scope('correction_rescale')
+                        tracer.exit_scope("correction_rescale")
+                        iket_pop_if_enabled(self.use_iket)
                         # Notify mma warp that O has been rescaled
                         pipeline_s_p_o.consumer_release_w_index(stage)
                         pipeline_sm_stats.consumer_release_w_index(
                             self.q_stage - 1 - stage
                         )
-                    tracer.exit_scope('wait_and_correct')
+                    tracer.exit_scope("wait_and_correct")
+                    iket_pop_if_enabled(self.use_iket)
                     sm_stats_consumer_phase ^= 1
                     # o_corr_consumer_phase ^= 1
                 pipeline_sm_stats.consumer_release_w_index(1)
                 # End of seqlen_corr_loop_steps
 
-                tracer.enter_scope('correction_epilogue')
+                iket_push_if_enabled(self.use_iket, "correction_epilogue")
+                tracer.enter_scope("correction_epilogue")
                 # Even in the case of self.overlap_sO_sQ, we can write to stage 0 of sO without
                 # additional sync because the MMA in the top half must have been done.
                 # Similarly we can write to stage 1 of sO without additional sync.
@@ -2139,7 +2215,8 @@ class FlashAttentionForwardSm100Simple:
                     seqlen_q = seqlen.seqlen_q
                     if tidx < seqlen_q - m_tile_idx * self.m_block_size:
                         gLSE[tidx] = lse
-                tracer.exit_scope('correction_epilogue')
+                tracer.exit_scope("correction_epilogue")
+                iket_pop_if_enabled(self.use_iket)
 
             # Advance to next tile
             tile_scheduler.advance_to_next_work()

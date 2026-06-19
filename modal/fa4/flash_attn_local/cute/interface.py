@@ -22,7 +22,7 @@
 import os
 import math
 from functools import lru_cache
-from typing import Optional, Tuple, Callable
+from typing import Any, Optional, Tuple, Callable
 
 import torch
 
@@ -30,30 +30,30 @@ import cuda.bindings.driver as cuda
 
 import cutlass
 import cutlass.cute as cute
-from flash_attn.cute.cache_utils import get_jit_cache
-from flash_attn.cute.testing import is_fake_mode
+from .cache_utils import get_jit_cache
+from .testing import is_fake_mode
 
 from cutez.trace.core import TraceConfig
 from cutez.trace.session import CutezTraceSession
+from cutlass.cute.experimental import iket
 
 
 if os.environ.get("CUTE_DSL_PTXAS_PATH", None) is not None:
-    from flash_attn.cute import cute_dsl_ptxas  # noqa: F401
+    from . import cute_dsl_ptxas  # noqa: F401
 
     # Patch to dump ptx and then use system ptxas to compile to cubin
     cute_dsl_ptxas.patch()
 
 
-from flash_attn.cute import utils
-from flash_attn.cute.cute_dsl_utils import (
+from . import utils
+from .cute_dsl_utils import (
     to_cute_tensor,
     to_cute_aux_tensor,
     get_aux_tensor_metadata,
     get_broadcast_dims,
 )
-from flash_attn.cute.flash_fwd import FlashAttentionForwardSm90
-from .flash_fwd_sm100 import FlashAttentionForwardSm100
-from flash_attn.cute.flash_bwd_preprocess import FlashAttentionBackwardPreprocess
+
+BlockSparseTensorsTorch = Any
 
 # Router to switch between original and simple implementations
 # Set USE_SIMPLE_FA4=1 in environment to use simple version
@@ -64,15 +64,17 @@ import os
 _USE_SIMPLE = os.environ.get("USE_SIMPLE_FA4", "0") == "1"
 _USE_SIMPLE_VERSION = int(os.environ.get("USE_SIMPLE_FA4_VERSION", "1"))
 _USE_TRACE = os.environ.get("USE_TRACE_FA4", "0") == "1"
+_USE_IKET = os.environ.get("USE_IKET_FA4", "0") == "1"
 _TRACE_PATH = os.environ.get("TRACE_FA4_PATH", "/tmp/fa4_trace.json")
+if _USE_TRACE or _USE_IKET:
+    _USE_SIMPLE = True  # trace and iket integration require simple mode
 if _USE_TRACE:
-    _USE_SIMPLE = True  # trace requires simple mode
     _trace_session = CutezTraceSession(
         # block_available_bytes=84 * 8,
         block_available_bytes=48128,  # for kv_stages = 3
         segments_per_block=4,
         trace_path=_TRACE_PATH,
-        # enabled=False,
+        enabled=False,
         # verbose=True,
     )
     _trace_out = _trace_session.buffer
@@ -91,7 +93,7 @@ from .flash_fwd_sm100_trace import (
 
 def _get_fa100_simple_class():
     version = _USE_SIMPLE_VERSION
-    if _USE_TRACE:
+    if _USE_TRACE or _USE_IKET:
         return FlashAttentionForwardSm100Trace
     return FlashAttentionForwardSm100Simple
 
@@ -99,20 +101,6 @@ def _get_fa100_simple_class():
 def _get_fa100_class():
     """Get the appropriate FlashAttentionForwardSm100 class based on environment variable."""
     return _get_fa100_simple_class() if _USE_SIMPLE else FlashAttentionForwardSm100
-
-
-from flash_attn.cute.flash_bwd import FlashAttentionBackwardSm80
-from flash_attn.cute.flash_bwd_sm90 import FlashAttentionBackwardSm90
-from flash_attn.cute.flash_bwd_sm100 import FlashAttentionBackwardSm100
-from flash_attn.cute.flash_bwd_postprocess import FlashAttentionBackwardPostprocess
-from flash_attn.cute.flash_fwd_combine import FlashAttentionForwardCombine
-
-from flash_attn.cute.block_sparsity import (
-    BlockSparseTensorsTorch,
-    to_cute_block_sparse_tensors,
-    normalize_block_sparse_config,
-    normalize_block_sparse_config_bwd,
-)
 
 
 @lru_cache(maxsize=None)
@@ -340,6 +328,10 @@ def _flash_attn_fwd(
     )
 
     use_block_sparsity = block_sparse_tensors is not None
+    if use_block_sparsity:
+        raise NotImplementedError(
+            "local flash_attn_local.cute forward path does not vendor block-sparsity helpers yet"
+        )
 
     if mask_mod is None:
         if causal:
@@ -449,41 +441,10 @@ def _flash_attn_fwd(
                 "mask_mod with aux_tensors is not yet supported for varlen sequences. This will be fixed in a future PR."
             )
 
-    if use_block_sparsity:
-        if is_varlen:
-            raise NotImplementedError(
-                "Block sparsity is not yet supported for varlen sequences. This will be fixed in a future PR."
-            )
-        # NB: pack_gqa requires block sparse head dim == 1 (broadcasted)
-        if pack_gqa and block_sparse_tensors.mask_block_cnt.shape[1] != 1:
-            pack_gqa = False
-        if is_split_kv:
-            raise NotImplementedError(
-                "Block sparsity is not yet supported with SplitKV. TODO: partition sparse block lists per split."
-            )
-
     # See get_broadcast_dims for why this is needed in compile key
     block_sparse_broadcast_pattern = None
     normalized_block_sparse_tensors = None
     q_subtile_factor = None
-    if block_sparse_tensors is not None:
-        if seqlen_q is None:
-            raise ValueError(
-                "Block sparsity requires fixed-length sequences (seqlen_q must be known)."
-            )
-        (
-            normalized_block_sparse_tensors,
-            block_sparse_broadcast_pattern,
-            q_subtile_factor,
-        ) = normalize_block_sparse_config(
-            block_sparse_tensors,
-            batch_size=batch_size,
-            num_head=num_head,
-            seqlen_q=seqlen_q,
-            seqlen_k=seqlen_k,
-            block_size=(m_block_size, n_block_size),
-            q_stage=q_stage,
-        )
     if aux_tensors is not None:
         aux_tensor_metadata = get_aux_tensor_metadata(aux_tensors)
     else:
@@ -550,10 +511,6 @@ def _flash_attn_fwd(
             lse_tensor = None
 
         sparse_tensors = None
-        if normalized_block_sparse_tensors is not None:
-            sparse_tensors = to_cute_block_sparse_tensors(
-                normalized_block_sparse_tensors
-            )
 
         cute_aux_tensors = None
         aux_tensor_metadata = None
@@ -561,29 +518,8 @@ def _flash_attn_fwd(
             cute_aux_tensors = [to_cute_aux_tensor(buf) for buf in aux_tensors]
 
         if arch // 10 == 9:
-            assert page_table is None, "paged KV not supported on SM 9.0"
-            assert not is_split_kv, "SplitKV not supported on SM 9.0"
-            # fa_fwd = FlashAttentionForwardSm80(
-            fa_fwd = FlashAttentionForwardSm90(
-                dtype,
-                head_dim,
-                head_dim_v,
-                qhead_per_kvhead,
-                is_causal=causal,
-                is_local=local,
-                pack_gqa=pack_gqa,
-                tile_m=m_block_size,
-                tile_n=n_block_size,
-                # num_stages=1,
-                num_stages=2,
-                num_threads=num_threads,
-                Q_in_regs=False,
-                intra_wg_overlap=True,
-                mma_pv_is_rs=True,
-                mask_mod=mask_mod,
-                score_mod=score_mod,
-                has_aux_tensors=aux_tensors is not None,
-                q_subtile_factor=q_subtile_factor,
+            raise NotImplementedError(
+                "local flash_attn_local.cute package is currently isolated for SM100 forward only"
             )
         elif arch // 10 in [10, 11]:
             head_dim_padded = int(math.ceil(head_dim / 16) * 16)
@@ -607,7 +543,10 @@ def _flash_attn_fwd(
                 )
                 if _USE_TRACE:
                     fa_fwd.trace_cfg = _trace_cfg
+                fa_fwd.use_iket = _USE_IKET
             else:
+                from .flash_fwd_sm100 import FlashAttentionForwardSm100
+
                 fa_fwd = FlashAttentionForwardSm100(
                     head_dim,
                     head_dim_v,
@@ -673,12 +612,15 @@ def _flash_attn_fwd(
         compile_kwargs = {}
         if _USE_TRACE:
             compile_kwargs["trace_out"] = _trace_out
+        if _USE_IKET:
+            compile_kwargs["options"] = "iket"
         _flash_attn_fwd.compile_cache[compile_key] = cute.compile(
             *compile_args,
             **compile_kwargs,
             # options="--enable-tvm-ffi --opt-level 3 --ptxas-options '--verbose'",
         )
 
+    dag = None
     # In "fake mode", we will take torch fake tensors as input and the expected behaviors are:
     # - Use those fake metadata to populate compilation cache
     # - Return "fake" output tensors, which could be needed in follow-up fake operations
@@ -722,18 +664,16 @@ def _flash_attn_fwd(
         if _USE_TRACE:
             _trace_session.reset_buffer()
             runtime_kwargs["trace_out"] = _trace_out
+            dag = iket.dag('fa4_iket')
         _flash_attn_fwd.compile_cache[compile_key](*runtime_args, **runtime_kwargs)
-    if _USE_TRACE and _trace_session is not None:
-        _trace_session.write_trace_json()
-        print(f"Trace written to: {_trace_session.trace_path}")
+
+        if _USE_TRACE and _trace_session is not None:
+            _trace_session.write_trace_json()
+            print(f"Trace written to: {_trace_session.trace_path}")
+            dag.save()
     if is_split_kv:
-        _flash_attn_fwd_combine(
-            out_partial,
-            lse_partial.transpose(-1, -2),
-            out,
-            lse.transpose(-1, -2) if lse is not None else None,
-            cu_seqlens_q,
-            seqused_q,
+        raise NotImplementedError(
+            "local flash_attn_local.cute package does not vendor split-kv combine helpers yet"
         )
     return out, lse
 
