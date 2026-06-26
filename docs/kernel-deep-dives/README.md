@@ -25,3 +25,23 @@ This directory stores reusable notes from GuiGuzi-style kernel teaching sessions
 2. Most recent note file in that topic
 3. Repo source inspection
 4. Modal execution only if needed
+
+## ZhangYi Attempts
+
+When the user asks ZhangYi to reproduce a kernel, create attempt directories under:
+
+`docs/kernel-deep-dives/<topic>/zhangyi-attempts/`
+
+Each attempt uses a timestamped directory:
+
+`YYYY-MM-DD-HHMM-<attempt-name>/`
+
+Each attempt contains:
+- `round-00-packet/` with the initial skeleton files
+- `round-01/`, `round-02/`, and so on for iterative work
+
+Rules:
+1. ZhangYi must work only inside the current attempt directory.
+2. ZhangYi must use a fresh zero-context subagent every time an attempt starts.
+3. The full SuQin note is referenced by file path, not summarized from class transcript.
+4. Each round should be modal-runnable and leave a short round summary.
