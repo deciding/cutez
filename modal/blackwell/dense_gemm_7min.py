@@ -540,12 +540,12 @@ def kernel(
 
 
 # tiled_mma, c_layout/epi_tile, smem_layouts, tma_atoms/tma_tensors, cluster/tile_scheduler/grid
-@cutez.autotune(
-    configs=AUTOTUNE_CONFIGS,
-    key=["m", "n", "k"],
-    cache_path="/workspace/dump/dense_gemm_7min.json",
-    force_retune=True,
-)
+#@cutez.autotune(
+#    configs=AUTOTUNE_CONFIGS,
+#    key=["m", "n", "k"],
+#    cache_path="/workspace/dump/dense_gemm_7min.json",
+#    force_retune=True,
+#)
 @cute.jit
 def host_function(
     a: cute.Tensor,
@@ -602,6 +602,13 @@ def host_function(
         tiled_mma,
         cluster_layout_vmnk.shape,
     )
+    print('LOOK')
+    print(a_tma_atom)
+    print(a)
+    print(a_tma_tensor)
+    cute.print_tensor(a_tma_tensor)
+    print('\n')
+
     b_op = sm100_utils.cluster_shape_to_tma_atom_B(cluster_shape_mn, tiled_mma.thr_id)
     b_tma_atom, b_tma_tensor = cute.nvgpu.make_tiled_tma_atom_B(
         b_op,
@@ -809,6 +816,9 @@ def run_dense_gemm(
         k,
         max_active_clusters,
         current_stream,
+        mma_tiler_mn=(256, 256),
+        cluster_shape_mn=(2, 1),
+        ab_stages=6,
         verbose=True,
     )
 

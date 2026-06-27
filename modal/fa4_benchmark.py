@@ -28,13 +28,13 @@ fa4_image = (
 
 fa4_image = (
     fa4_image.pip_install("torch", "pytest", "einops")
-    #.pip_install("nvidia-cutlass-dsl>=4.4.1")
+    # .pip_install("nvidia-cutlass-dsl>=4.4.1")
     .pip_install("nvidia-cutlass-dsl==4.6.0.dev0")
     .pip_install("apache-tvm-ffi>=0.1.5,<0.2")
     .pip_install("torch-c-dlpack-ext")
     .pip_install("triton==3.5.1")
-    #.pip_install("quack-kernels>=0.2.10")
-    #.pip_install("flash-attn-4==4.0.0b4")
+    # .pip_install("quack-kernels>=0.2.10")
+    # .pip_install("flash-attn-4==4.0.0b4")
     .pip_install("flash-attn-4>=4.0.0b16")
     .pip_install("quack-kernels>=0.5.0")
     .pip_install("teraxlang==3.5.1.dev4")
@@ -64,6 +64,7 @@ def run_fa4_benchmark(
     from triton.testing import do_bench
     import os
     import subprocess
+    import shutil
 
     # result = subprocess.run(
     #    ["find", "/", "-name", "cuobjdump"],
@@ -127,6 +128,9 @@ def run_fa4_benchmark(
         os.environ["TRACE_FA4_PATH"] = "/workspace/dump/fa4_trace.json"
     if use_iket:
         use_simple = True
+        use_trace = True
+        os.environ["USE_TRACE_FA4"] = "1"
+        os.environ["TRACE_FA4_PATH"] = "/workspace/dump/fa4_trace.json"
         os.environ["USE_IKET_FA4"] = "1"
         print("USE_TRACE_FA4")
     if use_simple:
@@ -142,6 +146,62 @@ def run_fa4_benchmark(
     os.environ["CUTE_DSL_KEEP_PTX"] = "1"
     os.environ["CUTE_DSL_KEEP_CUBIN"] = "1"
     os.environ["CUTE_DSL_LINEINFO"] = "1"
+
+    if use_iket:
+        iket_output_dir = os.path.join(DUMP_DIR, "iket")
+        iket_log_path = os.path.join(DUMP_DIR, "iket_profile.log")
+        runner = "/workspace/fa4/iket_fa4_runner.py"
+        env = os.environ.copy()
+        env["PYTHONPATH"] = "/workspace/fa4:/workspace"
+        cmd = [
+            "python",
+            "-m",
+            "iket.cli.main",
+            "--log-level",
+            "info",
+            "--output-dir",
+            iket_output_dir,
+            "--clobber",
+            "profile",
+            "--postprocess",
+            "perfetto",
+            "--",
+            "env",
+            "PYTHONPATH=/workspace/fa4:/workspace",
+            "python",
+            runner,
+            "--dump-dir",
+            DUMP_DIR,
+        ]
+        print("Running IKET command:")
+        print(" ".join(cmd))
+        print(f"Saving IKET log to: {iket_log_path}")
+        with open(iket_log_path, "w") as iket_log:
+            subprocess.run(
+                cmd,
+                check=True,
+                env=env,
+                stdout=iket_log,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+
+        copied_jsons = []
+        for src in Path(iket_output_dir).rglob("*.json"):
+            dst = Path(DUMP_DIR) / src.name
+            if src.resolve() != dst.resolve():
+                shutil.copy2(src, dst)
+            copied_jsons.append(str(dst))
+
+        print(f"IKET output directory: {iket_output_dir}")
+        if copied_jsons:
+            print("Copied IKET JSON files:")
+            for path in copied_jsons:
+                print(path)
+        else:
+            print("No IKET JSON files found to copy")
+        print(f"to download and view: modal volume get {VOLUME_NAME} {dump_name}")
+        return
 
     class Timing(NamedTuple):
         mean: float
@@ -200,10 +260,10 @@ def run_fa4_benchmark(
     print(f"Compute capability: {torch.cuda.get_device_capability(0)}")
 
     # Config: seq_len=8k, head_dim=128, batch=4 (matching official benchmark)
-    batch_size = 4
-    nheads = 16
-    seqlen_q = 8192
-    seqlen_k = 8192
+    batch_size = 1
+    nheads = 1
+    seqlen_q = 1024
+    seqlen_k = 1024
     head_dim = 128
     dtype = torch.bfloat16
     causal = False
@@ -225,7 +285,7 @@ def run_fa4_benchmark(
     print("=" * 60)
 
     sys.path.insert(0, "/workspace/fa4")
-    sys.path.insert(0, "/workspace/cutez")
+    sys.path.insert(0, "/workspace")
     from flash_attn_local.cute import interface as interface_local
 
     flash_attn_func_local = interface_local.flash_attn_func
@@ -555,8 +615,10 @@ def run_fa4_benchmark(
     from teraxlang.tools import generate_htmls
 
     print("\nGenerating HTML viewers for PTX files...")
-    #generate_htmls(DUMP_DIR, "/workspace/fa4/flash_attn_local/cute/flash_fwd_sm100.py")
-    generate_htmls(DUMP_DIR, "/workspace/fa4/flash_attn_local/cute/flash_fwd_sm100_trace.py")
+    # generate_htmls(DUMP_DIR, "/workspace/fa4/flash_attn_local/cute/flash_fwd_sm100.py")
+    generate_htmls(
+        DUMP_DIR, "/workspace/fa4/flash_attn_local/cute/flash_fwd_sm100_trace.py"
+    )
     print("HTML generation complete!")
 
     if use_trace:
@@ -567,4 +629,6 @@ def run_fa4_benchmark(
 
 @app.local_entrypoint()
 def main(use_simple: bool = True, use_trace: bool = True, use_iket: bool = True):
-    run_fa4_benchmark.remote(use_simple=use_simple, use_trace=use_trace, use_iket=use_iket)
+    run_fa4_benchmark.remote(
+        use_simple=use_simple, use_trace=use_trace, use_iket=use_iket
+    )

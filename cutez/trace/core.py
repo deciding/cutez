@@ -167,6 +167,9 @@ class CutezTracer:
         cfg: TraceConfig,
         clock_ptr=None,
     ):
+        if cfg is None:
+            return cls(enabled=const_expr(False))
+
         if cfg.verbose:
             debug_smem_usage(cfg.smem_capacity_bytes)
 

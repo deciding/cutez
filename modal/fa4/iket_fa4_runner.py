@@ -9,11 +9,10 @@ import torch
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dump-dir", required=True)
-    parser.add_argument("--use-trace", action="store_true")
-    parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--nheads", type=int, default=16)
-    parser.add_argument("--seqlen-q", type=int, default=8192)
-    parser.add_argument("--seqlen-k", type=int, default=8192)
+    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--nheads", type=int, default=4)
+    parser.add_argument("--seqlen-q", type=int, default=256)
+    parser.add_argument("--seqlen-k", type=int, default=256)
     parser.add_argument("--head-dim", type=int, default=128)
     args = parser.parse_args()
 
@@ -22,9 +21,8 @@ def main():
 
     os.environ["USE_SIMPLE_FA4"] = "1"
     os.environ["USE_IKET_FA4"] = "1"
-    os.environ["USE_TRACE_FA4"] = "1" if args.use_trace else "0"
-    if args.use_trace:
-        os.environ["TRACE_FA4_PATH"] = str(dump_dir / "fa4_trace.json")
+    os.environ["USE_TRACE_FA4"] = "1"
+    os.environ["TRACE_FA4_PATH"] = str(dump_dir / "fa4_trace.json")
     os.environ.setdefault("CUTE_DSL_DUMP_DIR", str(dump_dir))
     os.environ.setdefault("CUTE_DSL_KEEP_PTX", "1")
     os.environ.setdefault("CUTE_DSL_KEEP_CUBIN", "1")
