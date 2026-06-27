@@ -1,3 +1,5 @@
+# modified by @deciding
+
 # Copyright (c) 2025 - 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
 
@@ -27,11 +29,19 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 """
-Grouped GEMM (C_g = A_g * B_g for each group g) for Blackwell SM100 using CuTe DSL.
-Each group can have distinct (M, N, K). Uses TMA + persistent warp-specialized kernel
-with per-group online tensor map updates.
+[GROUPED_GEMM] Grouped GEMM (C_g = A_g * B_g for each group g) for Blackwell SM100 using CuTe DSL.
+[GROUPED_GEMM] Each group can have distinct (M, N, K). Uses TMA + persistent warp-specialized kernel
+[GROUPED_GEMM] with per-group online tensor map updates.
+[GROUPED_GEMM] DENSE counterpart dense_gemm_persistent.py solves a single (M,N,K,L) problem.
+[GROUPED_GEMM] Key distinction: TMA descriptors are updated at runtime per group switch.
+[GROUPED_GEMM] Dense: descriptors are static, set once at compile time.
 """
 
+# [GROUPED_GEMM] Imports differ from dense:
+#   - No argparse, lru_cache (dense has them for CLI and compile caching)
+#   - Adds torch, sm100_utils (cutlass.utils.blackwell_helpers), cutlass.torch
+#   - No create_cute_tensor_for_fp8 (grouped does not support fp8 yet)
+#   - Dense uses utils.sm100.* directly; grouped uses sm100_utils alias
 import functools
 from typing import List, Type, Union
 from inspect import isclass
@@ -51,6 +61,8 @@ import cutlass.torch as cutlass_torch
 
 
 class GroupedGemmKernel:
+    # [GROUPED_GEMM] Constructor: DENSE takes use_tma_store(bool); GROUPED takes tensormap_update_mode(enum).
+    # [GROUPED_GEMM] Grouped has extra class constants (reserved_smem_bytes, bytes_per_tensormap, etc.).
     def __init__(
         self,
         acc_dtype: type[cutlass.Numeric],
@@ -89,6 +101,8 @@ class GroupedGemmKernel:
             barrier_id=2,
             num_threads=32 * len((self.mma_warp_id, *self.epilog_warp_id)),
         )
+        # [GROUPED_GEMM] Extra barrier: synchronizes tensormap init between epilogue-warp-0 and TMA warp.
+        # [GROUPED_GEMM] No equivalent in dense.
         self.tensormap_ab_init_barrier = pipeline.NamedBarrier(
             barrier_id=3,
             num_threads=32 * (len(self.epilog_warp_id) + 1),
@@ -96,6 +110,9 @@ class GroupedGemmKernel:
         self.smem_capacity = utils.get_smem_capacity_in_bytes("sm_100")
         self.num_tma_load_bytes = 0
 
+    # [GROUPED_GEMM] Grouped computes cluster_tile_shape_mnk (cluster-level tile) — not present in dense.
+    # [GROUPED_GEMM] Grouped calls _compute_stages with different signature (takes epi_tile, c_layout, no use_tma_store).
+    # [GROUPED_GEMM] Grouped validates mbar + tensormap smem fit within reserved_smem_bytes — no equivalent in dense.
     def _setup_attributes(self):
         tiled_mma = sm100_utils.make_trivial_tiled_mma(
             self.a_dtype,
@@ -117,6 +134,8 @@ class GroupedGemmKernel:
             self.mma_tiler[1],
             self.mma_tiler[2],
         )
+        # [GROUPED_GEMM] cluster_tile_shape_mnk = cta_tile * cluster_shape. Used by GroupTileScheduler.
+        # [GROUPED_GEMM] No equivalent in dense — dense's scheduler just tiles the output tensor C.
         self.cluster_tile_shape_mnk = tuple(
             x * y for x, y in zip(self.cta_tile_shape_mnk, (*self.cluster_shape_mn, 1))
         )
@@ -128,12 +147,15 @@ class GroupedGemmKernel:
         self.num_mcast_ctas_b = cute.size(self.cluster_layout_vmnk.shape[1])
         self.is_a_mcast = self.num_mcast_ctas_a > 1
         self.is_b_mcast = self.num_mcast_ctas_b > 1
+        # [GROUPED_GEMM] Uses utils.compute_epilogue_tile_shape; dense uses utils.sm100.compute_epilogue_tile_shape
         self.epi_tile = utils.compute_epilogue_tile_shape(
             self.cta_tile_shape_mnk,
             self.use_2cta_instrs,
             self.c_layout,
             self.c_dtype,
         )
+        # [GROUPED_GEMM] _compute_stages returns (acc, ab, epi). Dense returns (acc, ab, c_stage).
+        # [GROUPED_GEMM] Dense takes use_tma_store and c_smem_layout; grouped always uses TMA store.
         (
             self.num_acc_stage,
             self.num_ab_stage,
@@ -149,15 +171,19 @@ class GroupedGemmKernel:
             self.smem_capacity,
             self.occupancy,
         )
+        # [GROUPED_GEMM] Uses sm100_utils alias; dense uses utils.sm100.
         self.a_smem_layout_staged = sm100_utils.make_smem_layout_a(
             tiled_mma, self.mma_tiler, self.a_dtype, self.num_ab_stage
         )
         self.b_smem_layout_staged = sm100_utils.make_smem_layout_b(
             tiled_mma, self.mma_tiler, self.b_dtype, self.num_ab_stage
         )
+        # [GROUPED_GEMM] epi_smem_layout_staged (always exists). Dense: c_smem_layout_staged only when use_tma_store.
         self.epi_smem_layout_staged = sm100_utils.make_smem_layout_epi(
             self.c_dtype, self.c_layout, self.epi_tile, self.num_epi_stage
         )
+        # [GROUPED_GEMM] Validates mbar + tensormap smem consumption against reserved_smem_bytes.
+        # [GROUPED_GEMM] No equivalent in dense — dense has no tensormap overhead.
         mbar_smem_bytes = self._get_mbar_smem_bytes(
             num_acc_stage=self.num_acc_stage,
             num_ab_stage=self.num_ab_stage,
@@ -180,6 +206,11 @@ class GroupedGemmKernel:
             tiled_mma, self.mma_tiler, self.num_acc_stage
         )
 
+    # [GROUPED_GEMM] __call__ signature is completely different from dense.
+    # [GROUPED_GEMM] Dense: (a, b, c, max_active_clusters, stream, epilogue_op)
+    # [GROUPED_GEMM] Grouped passes per-group metadata as tensors (problem_shape_mnkl, strides_abc, tensor_address_abc)
+    # [GROUPED_GEMM] plus tensormap_cute_tensor (buffer for runtime TMA descriptor updates) and total_num_clusters.
+    # [GROUPED_GEMM] No epilogue_op parameter (always identity).
     @cute.jit
     def __call__(
         self,
@@ -204,8 +235,11 @@ class GroupedGemmKernel:
         if cutlass.const_expr(self.a_dtype != self.b_dtype):
             raise TypeError(f"Type mismatch: {self.a_dtype} != {self.b_dtype}")
 
+        # [GROUPED_GEMM] _setup_attributes called before tiled_mma is re-created below.
+        # [GROUPED_GEMM] Dense does the same order but creates tiled_mma once and passes it.
         self._setup_attributes()
 
+        # [GROUPED_GEMM] Re-creates tiled_mma after _setup_attributes (same as dense pattern).
         tiled_mma = sm100_utils.make_trivial_tiled_mma(
             self.a_dtype,
             self.a_major_mode,
@@ -216,6 +250,7 @@ class GroupedGemmKernel:
         )
         atom_thr_size = cute.size(tiled_mma.thr_id.shape)
 
+        # [GROUPED_GEMM] TMA atom A/B: no internal_type=TFloat32 for Float32 (dense has this tweak).
         a_op = sm100_utils.cluster_shape_to_tma_atom_A(
             self.cluster_shape_mn, tiled_mma.thr_id
         )
@@ -244,6 +279,8 @@ class GroupedGemmKernel:
         b_copy_size = cute.size_in_bytes(self.b_dtype, b_smem_layout)
         self.num_tma_load_bytes = (a_copy_size + b_copy_size) * atom_thr_size
 
+        # [GROUPED_GEMM] TMA atom C: always created (grouped always uses TMA store).
+        # [GROUPED_GEMM] Dense: conditional on use_tma_store, otherwise passes raw C tensor.
         tma_atom_c = None
         tma_tensor_c = None
         epi_smem_layout = cute.slice_(self.epi_smem_layout_staged, (None, None, 0))
@@ -254,10 +291,19 @@ class GroupedGemmKernel:
             self.epi_tile,
         )
 
+        # [GROUPED_GEMM] _compute_grid takes total_num_clusters (not output tensor C).
+        # [GROUPED_GEMM] Uses StaticPersistentGroupTileScheduler; dense uses StaticPersistentTileScheduler.
         self.tile_sched_params, grid = self._compute_grid(
             total_num_clusters, self.cluster_shape_mn, max_active_clusters
         )
 
+        # [GROUPED_GEMM] SharedStorage struct: dense allocates via smem.allocate_tensor() for sA/sB/sC separately.
+        # [GROUPED_GEMM] Grouped defines a @cute.struct with:
+        #   - tensormap_buffer (extra — for runtime TMA descriptor storage in SMEM mode)
+        #   - ab_full_mbar_ptr + ab_empty_mbar_ptr (dense has only one barrier set via make_participants)
+        #   - acc_full_mbar_ptr + acc_empty_mbar_ptr (dense has full-only)
+        #   - tmem_dealloc_mbar, tmem_holding_buf
+        #   - sA, sB, sC wrapped in Align<MemRange> (dense uses smem.allocate_tensor with byte_alignment param)
         self.buffer_align_bytes = 1024
         self.size_tensormap_in_i64 = (
             0
@@ -300,6 +346,8 @@ class GroupedGemmKernel:
 
         self.shared_storage = SharedStorage
 
+        # [GROUPED_GEMM] Dense: no tensormap_cute_tensor, group_count, problem_shape_mnkl, strides_abc,
+        # [GROUPED_GEMM] or tensor_address_abc in the call. Dense passes epilogue_op as last arg.
         self.kernel(
             tiled_mma,
             tma_atom_a,
@@ -324,9 +372,12 @@ class GroupedGemmKernel:
             block=[self.threads_per_cta, 1, 1],
             cluster=(*self.cluster_shape_mn, 1),
             stream=stream,
-            min_blocks_per_mp=1,
+            min_blocks_per_mp=1,  # [GROUPED_GEMM] min_blocks_per_mp=1; dense doesn't set this
         )
 
+    # [GROUPED_GEMM] kernel: Dense takes tma_atom_c Optional + fallback raw C tensor mC_mnl.
+    # [GROUPED_GEMM] Grouped kernel always takes tma_atom_c, no fallback. No epilogue_op parameter.
+    # [GROUPED_GEMM] Extra params: group_count, problem_sizes_mnkl, strides_abc, ptrs_abc, tensormaps.
     @cute.kernel
     def kernel(
         self,
@@ -352,6 +403,7 @@ class GroupedGemmKernel:
         warp_idx = cute.arch.warp_idx()
         warp_idx = cute.arch.make_warp_uniform(warp_idx)
 
+        # [GROUPED_GEMM] Prefetches C descriptor unconditionally (dense guards with if use_tma_store).
         if warp_idx == self.tma_warp_id:
             cpasync.prefetch_descriptor(tma_atom_a)
             cpasync.prefetch_descriptor(tma_atom_b)
@@ -372,6 +424,8 @@ class GroupedGemmKernel:
         smem = utils.SmemAllocator()
         storage = smem.allocate(self.shared_storage)
 
+        # [GROUPED_GEMM] tensormap_a/b/c_smem_ptr: only used in SMEM update mode.
+        # [GROUPED_GEMM] Dense has no tensormap buffer — TMA descriptors are static.
         tensormap_a_smem_ptr = None
         tensormap_b_smem_ptr = None
         tensormap_c_smem_ptr = None
@@ -387,6 +441,9 @@ class GroupedGemmKernel:
                 tensormap_b_smem_ptr + GroupedGemmKernel.bytes_per_tensormap // 8
             )
 
+        # [GROUPED_GEMM] AB pipeline: uses separate full+empty barrier arrays.
+        # [GROUPED_GEMM] Dense uses PipelineTmaUmma.create().make_participants() which internally manages
+        # [GROUPED_GEMM] one set of barriers. Grouped manually creates both sets for explicit control.
         ab_pipeline_producer_group = pipeline.CooperativeGroup(pipeline.Agent.Thread)
         num_tma_producer = self.num_mcast_ctas_a + self.num_mcast_ctas_b - 1
         ab_pipeline_consumer_group = pipeline.CooperativeGroup(
@@ -401,6 +458,7 @@ class GroupedGemmKernel:
             cta_layout_vmnk=cluster_layout_vmnk,
             defer_sync=True,
         )
+        # [GROUPED_GEMM] ACC pipeline: uses acc_full_mbar_ptr + acc_empty_mbar_ptr arrays.
         acc_pipeline_producer_group = pipeline.CooperativeGroup(pipeline.Agent.Thread)
         num_acc_consumer_threads = len(self.epilog_warp_id) * (
             2 if use_2cta_instrs else 1
@@ -426,6 +484,8 @@ class GroupedGemmKernel:
 
         pipeline_init_arrive(cluster_shape_mn=self.cluster_shape_mn, is_relaxed=True)
 
+        # [GROUPED_GEMM] sA/sB/sC allocated from SharedStorage struct via get_tensor().
+        # [GROUPED_GEMM] Dense allocates each via smem.allocate_tensor() with byte_alignment=128, swizzle.
         sC = storage.sC.get_tensor(
             epi_smem_layout_staged.outer, swizzle=epi_smem_layout_staged.inner
         )
@@ -436,6 +496,9 @@ class GroupedGemmKernel:
             b_smem_layout_staged.outer, swizzle=b_smem_layout_staged.inner
         )
 
+        # [GROUPED_GEMM] Multicast: grouped has ab_empty_mcast_mask (for empty-barrier multicast release)
+        # [GROUPED_GEMM] and peer multicast masks for 2CTA mode (a_full_mcast_mask_peer, b_full_mcast_mask_peer).
+        # [GROUPED_GEMM] Dense only has a_full_mcast_mask and b_full_mcast_mask (no empty, no peer).
         a_full_mcast_mask = None
         b_full_mcast_mask = None
         ab_empty_mcast_mask = None
@@ -513,6 +576,9 @@ class GroupedGemmKernel:
             cute.append(acc_shape, self.num_acc_stage)
         )
 
+        # [GROUPED_GEMM] Grouped tile scheduler + tensormap workspace init — no equivalent in dense.
+        # [GROUPED_GEMM] StaticPersistentGroupTileScheduler: iterates groups, then tiles M/N within each.
+        # [GROUPED_GEMM] Dense uses StaticPersistentTileScheduler (single grid over M/N/L).
         pipeline_init_wait(cluster_shape_mn=self.cluster_shape_mn)
 
         grid_dim = cute.arch.grid_dim()
@@ -553,6 +619,12 @@ class GroupedGemmKernel:
         )
         initial_work_tile_info = tile_sched.initial_work_tile_info()
 
+        # [GROUPED_GEMM] TMA warp: dense loops over k_tiles in a simple while loop.
+        # [GROUPED_GEMM] Grouped iterates over groups via the scheduler:
+        #   - On group switch: updates A/B tensor maps to point to new group's memory
+        #   - Fences tensormap updates before issuing TMA loads
+        #   - Passes tma_desc_ptr to cute.copy for runtime TMA descriptor selection
+        # [GROUPED_GEMM] Dense has no per-group logic, no tensormap updates.
         if warp_idx == self.tma_warp_id and initial_work_tile_info.is_valid_tile:
             if cutlass.const_expr(self.delegate_tensormap_ab_init == False):
                 tensormap_manager.init_tensormap_from_atom(
@@ -679,6 +751,10 @@ class GroupedGemmKernel:
                 last_group_idx = cur_group_idx
             ab_pipeline.producer_tail(ab_producer_state)
 
+        # [GROUPED_GEMM] MMA warp: dense iterates a simple k_tile_cnt from local_tile shape.
+        # [GROUPED_GEMM] Grouped computes cur_k_tile_cnt from problem_shape_k from the scheduler.
+        # [GROUPED_GEMM] All MMA logic is under is_leader_cta guard (dense also does this).
+        # [GROUPED_GEMM] No tensormap involvement in MMA warp (only A/B data from SMEM).
         if warp_idx == self.mma_warp_id and initial_work_tile_info.is_valid_tile:
             tmem.wait_for_alloc()
             tmem_ptr = tmem.retrieve_ptr(self.acc_dtype)
@@ -742,6 +818,16 @@ class GroupedGemmKernel:
                 work_tile = tile_sched.get_current_work()
             acc_pipeline.producer_tail(acc_producer_state)
 
+        # [GROUPED_GEMM] Epilogue warp: massively different from dense.
+        # [GROUPED_GEMM] Dense delegates to utils.gemm.sm100.epilogue_tma_store() / epilogue() utility functions.
+        # [GROUPED_GEMM] Grouped inlines the entire pipeline: tmem→rmem→smem→gmem with explicit steps:
+        #   - delegate_tensormap_ab_init: if SMEM mode, epilogue warp 0 initializes A/B tensor maps in SMEM
+        #     (arrive_and_wait signals TMA warp they're ready)
+        #   - Initializes C tensor map from atom (not in dense — no C tensormap needed)
+        #   - Allocates tmem, partitions copy atoms for tmem→rmem, rmem→smem, smem→gmem
+        #   - On group switch: updates C tensor map via tensormap_manager.update_tensormap()
+        #   - Per subtile: load from tmem, convert, store to smem, sync, TMA store to gmem
+        #   - Handles zero-k-tile groups (fills C with zeros)
         if warp_idx < self.mma_warp_id and initial_work_tile_info.is_valid_tile:
             if cutlass.const_expr(self.delegate_tensormap_ab_init):
                 tensormap_manager.init_tensormap_from_atom(
@@ -791,6 +877,9 @@ class GroupedGemmKernel:
                 num_stages=self.num_epi_stage,
                 producer_group=c_producer_group,
             )
+            # [GROUPED_GEMM] Epilogue main loop: per-group C tensor map updates + subtile writeback.
+            # [GROUPED_GEMM] Dense's epilogue_tma_store() handles the entire writeback in one utility call
+            # [GROUPED_GEMM] with no group iteration, no tensormap updates.
             last_group_idx = cutlass.Int32(-1)
             while work_tile.is_valid_tile:
                 grouped_gemm_cta_tile_info = work_tile.group_search_result
@@ -879,6 +968,10 @@ class GroupedGemmKernel:
             tmem.free(tmem_ptr)
             c_pipeline.producer_tail()
 
+    # [GROUPED_GEMM] make_tensor_for_tensormap_update: no equivalent in dense.
+    # [GROUPED_GEMM] Constructs a CuTe tensor for a specific group's A/B/C by reading
+    # [GROUPED_GEMM] the pointer and strides from the per-group metadata tensors.
+    # [GROUPED_GEMM] Used only for updating TMA descriptors — not for actual data movement.
     @cute.jit
     def make_tensor_for_tensormap_update(
         self,
@@ -931,6 +1024,9 @@ class GroupedGemmKernel:
                 cute.make_layout((m, n, c1), stride=(stride_mn, stride_k, c0)),
             )
 
+    # [GROUPED_GEMM] epilog_tmem_copy_and_partition: inlined in dense as part of
+    # [GROUPED_GEMM] utils.gemm.sm100.epilogue_tma_store(). Grouped breaks it into explicit
+    # [GROUPED_GEMM] separate methods for tmem→rmem, rmem→smem, smem→gmem partitioning.
     def epilog_tmem_copy_and_partition(
         self,
         tidx,
@@ -965,6 +1061,8 @@ class GroupedGemmKernel:
         )
         return tiled_copy_t2r, tTR_tAcc, tTR_rAcc
 
+    # [GROUPED_GEMM] epilog_smem_copy_and_partition: dense handles rmem→smem copy inside epilogue utility.
+    # [GROUPED_GEMM] Grouped separates it into its own method for clarity.
     def epilog_smem_copy_and_partition(
         self,
         tiled_copy_t2r,
@@ -1002,6 +1100,11 @@ class GroupedGemmKernel:
         )
         return tma_atom_c, bSG_sC, bSG_gC
 
+    # [GROUPED_GEMM] _compute_stages: different signature from dense.
+    # [GROUPED_GEMM] Grouped takes epi_tile, c_layout (no use_tma_store — always TMA store).
+    # [GROUPED_GEMM] Uses sm100_utils.make_* instead of utils.sm100.make_*.
+    # [GROUPED_GEMM] Accounts for reserved_smem_bytes (mbar + tensormap overhead).
+    # [GROUPED_GEMM] Dense's version doesn't subtract tensormap overhead.
     @staticmethod
     def _compute_stages(
         tiled_mma,
@@ -1052,6 +1155,10 @@ class GroupedGemmKernel:
         num_epi_stage += remaining_smem // (occupancy * epi_bytes_per_stage)
         return num_acc_stage, num_ab_stage, num_epi_stage
 
+    # [GROUPED_GEMM] _compute_grid: takes total_num_clusters (not output tensor C).
+    # [GROUPED_GEMM] Uses StaticPersistentGroupTileScheduler; dense uses StaticPersistentTileScheduler.
+    # [GROUPED_GEMM] The grid is 3D (cluster_m, cluster_n, num_cluster_groups) instead of
+    # [GROUPED_GEMM] being derived from C's dimensions.
     @staticmethod
     def _compute_grid(
         total_num_clusters,
@@ -1071,6 +1178,8 @@ class GroupedGemmKernel:
         )
         return tile_sched_params, grid
 
+    # [GROUPED_GEMM] _get_mbar_smem_bytes: not in dense. Calculates smem needed for barrier arrays
+    # [GROUPED_GEMM] (full + empty for each of acc, ab, epi stages, 8 bytes per barrier).
     @staticmethod
     def _get_mbar_smem_bytes(**kwargs_stages):
         num_barriers_per_stage = 2
@@ -1080,6 +1189,8 @@ class GroupedGemmKernel:
             for stage in kwargs_stages.values()
         )
 
+    # [GROUPED_GEMM] _get_tensormap_smem_bytes: not in dense. Returns smem needed for tensormap
+    # [GROUPED_GEMM] buffers (0 for GMEM mode, 3×128 bytes for SMEM mode).
     @staticmethod
     def _get_tensormap_smem_bytes(tensormap_update_mode):
         if tensormap_update_mode == utils.TensorMapUpdateMode.GMEM:
@@ -1091,18 +1202,25 @@ class GroupedGemmKernel:
         else:
             raise ValueError(f"Invalid tensormap update mode: {tensormap_update_mode}")
 
+    # [GROUPED_GEMM] _compute_num_tmem_alloc_cols: single-arg version.
+    # [GROUPED_GEMM] Dense takes an extra `arch` parameter ("sm_100").
     @staticmethod
     def _compute_num_tmem_alloc_cols(tiled_mma, mma_tiler, num_acc_stage):
         acc_shape = tiled_mma.partition_shape_C(mma_tiler[:2])
         tCtAcc_fake = tiled_mma.make_fragment_C(cute.append(acc_shape, num_acc_stage))
         return utils.get_num_tmem_alloc_cols(tCtAcc_fake)
 
+    # [GROUPED_GEMM] Class-level constants: not in dense (dense has no tensormap or barrier overhead).
     reserved_smem_bytes = 1024
     bytes_per_tensormap = 128
     num_tensormaps = 3
     tensor_memory_management_bytes = 12
 
 
+# [GROUPED_GEMM] create_tensor_and_stride: different from dense's prepare_tensors().
+# [GROUPED_GEMM] Dense uses create_cute_tensor_for_fp8 with fp8 support; grouped uses cutlass_torch directly.
+# [GROUPED_GEMM] Grouped bundles creation of torch_tensor, cute_tensor, cpu_fp32_ref, stride, and ptr.
+# [GROUPED_GEMM] Dense's prepare_tensors() separates fp32 refs from storage tensors.
 def create_tensor_and_stride(
     l: int,
     mode0: int,
@@ -1126,6 +1244,11 @@ def create_tensor_and_stride(
     )
 
 
+# [GROUPED_GEMM] create_tensors_for_all_groups: no equivalent in dense.
+# [GROUPED_GEMM] Creates tensors, strides, and pointers for all groups at once.
+# [GROUPED_GEMM] Returns metadata arrays indexed by group_idx: ptrs_abc, strides_abc,
+# [GROUPED_GEMM] cute_tensors_abc, and fp32 reference tensors for verification.
+# [GROUPED_GEMM] Dense creates tensors for a single problem via prepare_tensors().
 def create_tensors_for_all_groups(
     problem_sizes_mnkl,
     ab_dtype,
@@ -1188,6 +1311,18 @@ def create_tensors_for_all_groups(
     )
 
 
+# [GROUPED_GEMM] run(): completely different from dense's run().
+# [GROUPED_GEMM] Dense takes a single mnkl tuple + benchmark flag; grouped takes:
+#   - num_groups + problem_sizes_mnkl list
+#   - host_problem_shape_available flag
+#   - tensormap_update_mode
+# [GROUPED_GEMM] Dense uses compile_bmm wrapper → bmm wrapper → PersistentDenseGemmKernel.__call__.
+# [GROUPED_GEMM] Grouped compiles GroupedGemmKernel directly (no bmm wrapper, no can_implement).
+# [GROUPED_GEMM] Reference check: dense uses torch.bmm(); grouped uses per-group torch.einsum().
+# [GROUPED_GEMM] Grouped creates tensormap buffers, per-group metadata tensors (strides, ptrs, dims).
+# [GROUPED_GEMM] No fp8 support (raises ValueError for non-fp16/bf16).
+# [GROUPED_GEMM] Dense has use_tma_store, epilogue_op; grouped does not.
+# [GROUPED_GEMM] Benchmarking: grouped benchmarks whenever iterations > 0; dense has benchmark bool.
 def run(
     num_groups: int,
     problem_sizes_mnkl: tuple[int, int, int, int],
@@ -1224,6 +1359,8 @@ def run(
     print(f"Skip reference checking: {skip_ref_check}")
     print(f"Use cold L2: {'True' if use_cold_l2 else 'False'}")
 
+    # [GROUPED_GEMM] Validation: grouped validates inline (not via can_implement method like dense).
+    # [GROUPED_GEMM] Grouped only supports fp16/bf16 AB; dense supports fp8/int8/tf32 too.
     if ab_dtype not in {cutlass.Float16, cutlass.BFloat16}:
         raise ValueError(f"Skip unsupported ab_dtype {ab_dtype}")
     if c_dtype not in {cutlass.Float16, cutlass.BFloat16, cutlass.Float32}:
@@ -1375,6 +1512,9 @@ def run(
     except ImportError:
         opt_level = 3
 
+    # [GROUPED_GEMM] compile: grouped compiles GroupedGemmKernel directly with metadata tensors
+    # [GROUPED_GEMM] (num_groups, problem_sizes, strides, ptrs, total_clusters, tensormaps, max_clusters).
+    # [GROUPED_GEMM] Dense uses compile_bmm() → cute.compile(bmm, gemm, a, b, c, ...) — adds a bmm wrapper layer.
     compiled_grouped_gemm = cute.compile(
         grouped_gemm,
         initial_cute_tensors_abc[0],
@@ -1391,6 +1531,8 @@ def run(
         options=f"--opt-level {opt_level}",
     )
 
+    # [GROUPED_GEMM] Correctness: grouped uses per-group torch.einsum("mkl,nkl->mnl").
+    # [GROUPED_GEMM] Dense uses torch.bmm(a_f32, b_f32) — single batch matmul.
     if not skip_ref_check:
         compiled_grouped_gemm(
             initial_cute_tensors_abc[0],
@@ -1416,9 +1558,13 @@ def run(
                 rtol=1e-05,
             )
 
+    # [GROUPED_GEMM] Benchmarking: grouped benchmarks whenever iterations > 0.
+    # [GROUPED_GEMM] Dense uses a `benchmark` bool flag to control this.
     if iterations <= 0:
         return 0
 
+    # [GROUPED_GEMM] Benchmark generator: creates fresh tensors + tensor maps per iteration
+    # [GROUPED_GEMM] (dense's generator only creates a, b, c with no metadata or tensormap arrays).
     def generate_tensors():
         (
             ptrs_abc_workspace,
@@ -1476,6 +1622,8 @@ def run(
         args.add_to_scope([torch_tensors_abc_workspace])
         return args
 
+    # [GROUPED_GEMM] Workspace size for cold L2: includes per-group tensors + strides + ptrs + tensormaps.
+    # [GROUPED_GEMM] Dense only accounts for a_storage, b_storage, c_storage.
     workspace_count = 1
     if use_cold_l2:
         one_workspace_bytes = (
