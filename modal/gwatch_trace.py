@@ -16,7 +16,7 @@ image = (
         "dpkg -i cuda-keyring_1.1-1_all.deb",
         "apt-get update",
     )
-    .apt_install("cuda-toolkit-12-9")
+    .apt_install("cuda-toolkit-13-2")
     .workdir("/workspace")
     .pip_install("torch")
     .pip_install("nvidia-cutlass-dsl==4.6.0.dev0")
